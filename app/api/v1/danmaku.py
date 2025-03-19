@@ -29,10 +29,20 @@ async def match_file(request: FileMatchRequest) -> MatchResponse:
         await proxy.close()
 
 @router.get("/{episode_id}")
-async def get_danmaku(episode_id: int):
+async def get_danmaku(
+    episode_id: int,
+    from_id: int = 0,
+    with_related: bool = False,
+    ch_convert: int = 0
+):
     proxy = DanmakuProxy()
     try:
-        result = await proxy.get_danmaku(episode_id)
+        result = await proxy.get_danmaku(
+            episode_id=episode_id,
+            from_id=from_id,
+            with_related=with_related,
+            ch_convert=ch_convert
+        )
         return result
     finally:
         await proxy.close()

@@ -10,12 +10,21 @@ class DanmakuProxy:
         self.base_url = settings.DANDAN_API_BASE_URL
         self.client = httpx.AsyncClient()
 
-    async def get_danmaku(self, episode_id: int) -> Optional[Dict[str, Any]]:
+    async def get_danmaku(
+        self,
+        episode_id: int,
+        from_id: int = 0,
+        with_related: bool = True,
+        ch_convert: int = 0
+    ) -> Optional[Dict[str, Any]]:
         """
         从弹弹play获取弹幕数据
         
         Args:
             episode_id: 节目编号
+            from_id: 起始弹幕编号，忽略此编号以前的弹幕
+            with_related: 是否同时获取关联的第三方弹幕
+            ch_convert: 中文简繁转换。0-不转换，1-转换为简体，2-转换为繁体
             
         Returns:
             Optional[Dict[str, Any]]: 弹幕数据
@@ -29,11 +38,18 @@ class DanmakuProxy:
             'X-Signature': signature
         }
         
+        params = {
+            'from': from_id,
+            'withRelated': str(with_related).lower(),
+            'chConvert': ch_convert
+        }
+        
         try:
             response = await self.client.get(
                 f"{self.base_url}{path}",
-                params={'withRelated': 'true'},
-                headers=headers
+                params=params,
+                headers=headers,
+                follow_redirects=True  # 允许自动跟随重定向
             )
             response.raise_for_status()
             return response.json()
