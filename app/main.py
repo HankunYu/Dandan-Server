@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .api import danmaku
+from .api.v1 import danmaku
 from .database import init_db
 
 app = FastAPI(

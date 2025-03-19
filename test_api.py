@@ -15,8 +15,8 @@ async def test_match():
     try:
         # 测试数据
         test_data = {
-            "file_name": "名侦探柯南：漆黑的追踪者 (2009) - 1080p.mkv",
-            "file_hash": "ef6980845c92654477c935edc5c0d6f4",
+            "file_name": "葬送的芙莉莲 - S01E01.mkv",
+            "file_hash": "0a27428e49e9d6fddee74fcafb888027",
             "file_size": 0,
             "video_duration": 0
         }

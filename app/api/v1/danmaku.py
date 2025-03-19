@@ -13,15 +13,18 @@ router = APIRouter()
 
 @router.post("/match", response_model=MatchResponse)
 async def match_file(request: FileMatchRequest) -> MatchResponse:
+    print("Received request:", request.dict())
     proxy = DanmakuProxy()
     try:
-        return await proxy.match_file(
+        result = await proxy.match_file(
             file_name=request.file_name,
             file_hash=request.file_hash,
-            file_size=request.file_size,
-            video_duration=request.video_duration,
+            file_size=request.file_size,  # 已经是整数
+            video_duration=request.video_duration,  # 已经是浮点数
             match_mode=request.match_mode
         )
+        print("Match result:", result)
+        return result
     finally:
         await proxy.close()
 

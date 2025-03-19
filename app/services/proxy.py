@@ -50,7 +50,7 @@ class DanmakuProxy:
         file_hash: str,
         file_size: int,
         video_duration: int,
-        match_mode: int = 1
+        match_mode: str = "hashAndFileName"
     ) -> MatchResponse:
         """
         通过文件信息匹配节目
@@ -60,7 +60,7 @@ class DanmakuProxy:
             file_hash: 文件前16MB的MD5哈希值
             file_size: 文件大小（字节）
             video_duration: 视频时长（秒）
-            match_mode: 匹配模式（1: 精确匹配）
+            match_mode: 匹配模式（hashAndFileName: 文件名和哈希值匹配）
             
         Returns:
             MatchResponse: 匹配结果
@@ -83,17 +83,27 @@ class DanmakuProxy:
             'Content-Type': 'application/json'
         }
         
+        print("Request URL:", f"{self.base_url}{path}")
+        print("Request Headers:", headers)
+        print("Request Data:", data)
+        
         try:
             response = await self.client.post(
                 f"{self.base_url}{path}",
                 json=data,
                 headers=headers
             )
+            print("Response Status:", response.status_code)
+            print("Response Headers:", dict(response.headers))
             response.raise_for_status()
             result = response.json()
-            print(result)
+            print("Response Body:", result)
             if not isinstance(result, dict):
                 raise ValueError("Invalid response format")
+            
+            # 确保 matches 字段是列表类型
+            if result.get('matches') is None:
+                result['matches'] = []
                 
             return MatchResponse(**result)
             

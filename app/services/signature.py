@@ -23,7 +23,12 @@ def generate_signature(path: str) -> tuple[str, str, str]:
     # 计算签名
     # base64(sha256(AppId + Timestamp + Path + AppSecret))
     sign_str = f"{app_id}{timestamp}{path}{settings.DANDAN_APP_SECRET}"
+    print("Signature String:", sign_str)
     sha256_hash = hashlib.sha256(sign_str.encode()).digest()
     signature = base64.b64encode(sha256_hash).decode()
+    
+    print("Generated Signature:", signature)
+    print("Timestamp:", timestamp)
+    print("AppId:", app_id)
     
     return signature, timestamp, app_id 

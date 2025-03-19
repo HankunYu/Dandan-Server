@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite+aiosqlite:///./dandan.db"
     
     # 弹弹play API配置
-    DANDAN_API_BASE_URL: str = "https://api.dandanplay.com"
+    DANDAN_API_BASE_URL: str = "https://api.dandanplay.net"
     DANDAN_APP_ID: str
     DANDAN_APP_SECRET: str
     
