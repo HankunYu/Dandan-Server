@@ -1,7 +1,14 @@
+import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from .config import settings
 from .models.danmaku import Base
+from .models.file_match import FileMatch
+
+# 确保数据库目录存在
+db_dir = os.path.dirname(settings.DATABASE_URL.replace('sqlite+aiosqlite:///', ''))
+if db_dir and not os.path.exists(db_dir):
+    os.makedirs(db_dir)
 
 # 创建异步引擎
 engine = create_async_engine(
@@ -20,7 +27,9 @@ AsyncSessionLocal = sessionmaker(
 async def init_db():
     """初始化数据库"""
     async with engine.begin() as conn:
+        # 创建所有表
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(FileMatch.metadata.create_all)
 
 async def get_db():
     """获取数据库会话"""

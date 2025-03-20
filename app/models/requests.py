@@ -24,7 +24,4 @@ class FileMatchRequest(BaseModel):
         # 确保数值类型正确
         d['file_size'] = int(d['file_size'])
         d['video_duration'] = int(d['video_duration'])
-        return d
-
-class SearchRequest(BaseModel):
-    keyword: str 
+        return d 
