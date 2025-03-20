@@ -90,6 +90,39 @@ POST /api/v1/match
 返回：
 - 匹配结果列表（JSON格式）
 
+### 文件匹配并获取弹幕
+
+```
+POST /api/v1/match_with_danmaku
+```
+
+请求体：
+```json
+{
+    "file_name": "string",
+    "file_hash": "string",
+    "file_size": 0,
+    "video_duration": 0,
+    "match_mode": "hashAndFileName",
+    "from_id": 0,
+    "with_related": true,
+    "ch_convert": 0
+}
+```
+
+参数说明：
+- file_name: 视频文件名
+- file_hash: 文件前16MB的MD5哈希值
+- file_size: 文件大小（字节）
+- video_duration: 视频时长（秒）
+- match_mode: 匹配模式（默认为 "hashAndFileName"）
+- from_id: 起始弹幕编号，忽略此编号以前的弹幕（默认为 0）
+- with_related: 是否同时获取关联的第三方弹幕（默认为 true）
+- ch_convert: 中文简繁转换。0-不转换，1-转换为简体，2-转换为繁体（默认为 0）
+
+返回：
+- 弹幕数据（JSON格式），如果匹配失败则返回空对象
+
 ### 搜索动画
 
 ```
