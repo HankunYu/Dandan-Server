@@ -44,4 +44,17 @@ class DanmakuWithDetailRequest(FileMatchRequest):
                 "with_related": True,
                 "ch_convert": 0
             }
+        }
+
+class TmdbSearchRequest(BaseModel):
+    """TMDB ID搜索请求模型"""
+    tmdb_id: int
+    episode: int
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "tmdb_id": 100049,
+                "episode": 2
+            }
         } 

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from app.services.proxy import DanmakuProxy
 from app.models.danmaku import MatchResponse
-from app.models.requests import FileMatchRequest, DanmakuWithDetailRequest
+from app.models.requests import FileMatchRequest, DanmakuWithDetailRequest, TmdbSearchRequest
 from app.database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 import os
@@ -79,5 +79,30 @@ async def get_danmaku_with_detail(
             ch_convert=request.ch_convert
         )
         return result or {}
+    finally:
+        await proxy.close()
+
+@router.post("/search/tmdb")
+async def search_by_tmdb(
+    request: TmdbSearchRequest,
+    db: AsyncSession = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    通过TMDB ID搜索动画剧集
+    
+    Args:
+        request: 包含TMDB ID和集数的请求
+        db: 数据库会话
+        
+    Returns:
+        Dict[str, Any]: 搜索结果，包含匹配的动画信息和剧集信息
+    """
+    proxy = DanmakuProxy(db)
+    try:
+        result = await proxy.search_by_tmdb(
+            tmdb_id=request.tmdb_id,
+            episode=request.episode
+        )
+        return result
     finally:
         await proxy.close() 

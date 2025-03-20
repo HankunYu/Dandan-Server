@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional, List
 from ..config import settings
 from .signature import generate_signature
 from fastapi import HTTPException
-from app.models.danmaku import MatchResponse, DanmakuCache
+from app.models.danmaku import MatchResponse, DanmakuCache, TmdbCache
 from app.models.file_match import FileMatch
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -259,6 +259,95 @@ class DanmakuProxy:
         
         logger.warning(f"文件匹配失败: {file_name}")
         return None
+
+    async def search_by_tmdb(self, tmdb_id: int, episode: int) -> Dict[str, Any]:
+        """
+        通过TMDB ID搜索动画剧集，支持缓存
+        
+        Args:
+            tmdb_id: TMDB ID
+            episode: 集数
+            
+        Returns:
+            Dict[str, Any]: 搜索结果
+        """
+        # 首先尝试从缓存获取数据
+        try:
+            stmt = select(TmdbCache).where(
+                TmdbCache.tmdb_id == tmdb_id,
+                TmdbCache.episode == episode
+            )
+            result = await self.db.execute(stmt)
+            cached_data = result.scalar_one_or_none()
+            
+            if cached_data:
+                logger.info(f"从缓存获取TMDB搜索结果: tmdb_id={tmdb_id}, episode={episode}")
+                return cached_data.data
+        except Exception as e:
+            logger.error(f"从缓存获取TMDB搜索结果时出错: {e}")
+
+        # 如果缓存不存在，从API获取数据
+        path = f"/api/v2/search/episodes"
+        signature, timestamp, app_id = generate_signature(path)
+        
+        params = {
+            'tmdbId': tmdb_id,
+            'episode': episode
+        }
+        
+        headers = {
+            'X-AppId': app_id,
+            'X-Timestamp': timestamp,
+            'X-Signature': signature
+        }
+        
+        try:
+            response = await self.client.get(
+                f"{self.base_url}{path}",
+                params=params,
+                headers=headers,
+                follow_redirects=True
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            # 保存到缓存
+            try:
+                # 检查是否已存在缓存
+                stmt = select(TmdbCache).where(
+                    TmdbCache.tmdb_id == tmdb_id,
+                    TmdbCache.episode == episode
+                )
+                result = await self.db.execute(stmt)
+                existing_cache = result.scalar_one_or_none()
+                
+                if existing_cache:
+                    # 更新现有缓存
+                    existing_cache.data = data
+                    existing_cache.updated_at = datetime.now()
+                    logger.info(f"更新TMDB搜索结果缓存: tmdb_id={tmdb_id}, episode={episode}")
+                else:
+                    # 创建新缓存
+                    cache = TmdbCache(
+                        tmdb_id=tmdb_id,
+                        episode=episode,
+                        data=data
+                    )
+                    self.db.add(cache)
+                    logger.info(f"创建TMDB搜索结果缓存: tmdb_id={tmdb_id}, episode={episode}")
+                
+                await self.db.commit()
+            except Exception as e:
+                logger.error(f"保存TMDB搜索结果到缓存时出错: {e}")
+                await self.db.rollback()
+            
+            return data
+        except httpx.HTTPError as e:
+            logger.error(f"搜索动画时发生HTTP错误: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+        except Exception as e:
+            logger.error(f"搜索动画时发生意外错误: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
     async def close(self):
         """关闭HTTP客户端"""

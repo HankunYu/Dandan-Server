@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, JSON, DateTime
+from sqlalchemy import Column, Integer, String, JSON, DateTime, UniqueConstraint
 from sqlalchemy.sql import func
 from datetime import datetime, UTC
 from pydantic import BaseModel
@@ -39,3 +39,18 @@ class MatchResponse(BaseModel):
     errorMessage: Optional[str] = None
     isMatched: bool = False
     matches: List[Dict[str, Any]] = []
+
+class TmdbCache(Base):
+    """TMDB搜索结果缓存模型"""
+    __tablename__ = "tmdb_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tmdb_id = Column(Integer, index=True, nullable=False)
+    episode = Column(Integer, nullable=False)
+    data = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('tmdb_id', 'episode', name='uix_tmdb_episode'),
+    )

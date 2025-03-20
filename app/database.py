@@ -2,7 +2,7 @@ import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from .config import settings
-from .models.danmaku import Base as DanmakuBase
+from .models.danmaku import Base as DanmakuBase, TmdbCache
 from .models.file_match import Base as FileMatchBase
 
 # 确保数据库目录存在
