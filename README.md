@@ -1,6 +1,8 @@
 # Dandan Server
 
-这是一个弹弹play API的代理服务器，提供弹幕数据的缓存和转发服务。
+这是一个弹弹play API的代理服务器，提供弹幕数据的缓存和转发服务。用于我自己的项目。
+运行这个服务器需要想弹弹play平台申请APPID以及APPSECRET，请前往[弹弹开放平台](https://doc.dandanplay.com/open/)查看。
+在此感谢弹弹play提供的弹幕服务！
 
 ## 功能特点
 
