@@ -123,24 +123,6 @@ POST /api/v1/match_with_danmaku
 返回：
 - 弹幕数据（JSON格式），如果匹配失败则返回空对象
 
-### 搜索动画
-
-```
-POST /api/v1/search
-```
-
-请求体：
-```json
-{
-    "keyword": "string"
-}
-```
-
-参数说明：
-- keyword: 搜索关键词
-
-返回：
-- 搜索结果列表（JSON格式）
 
 ## 开发
 
