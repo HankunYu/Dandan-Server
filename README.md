@@ -20,7 +20,7 @@ git clone https://github.com/yourusername/dandan-server.git
 cd dandan-server
 ```
 
-2. 创建虚拟环境
+2. 创建虚拟环境 python3.12
 ```bash
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
