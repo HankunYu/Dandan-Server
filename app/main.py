@@ -1,9 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .api.v1 import danmaku
+from .api.v1 import danmaku, stats
 from .database import init_db
 from app.utils.logger import setup_logger
 import logging
+from app.middleware.api_stats import ApiStatsMiddleware
 
 # 初始化日志配置
 setup_logger()
@@ -24,7 +25,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(ApiStatsMiddleware)
+
 # 注册路由
+app.include_router(stats.router, prefix="/api/v1", tags=["stats"])
 app.include_router(danmaku.router, prefix="/api/v1", tags=["danmaku"])
 
 @app.on_event("startup")
