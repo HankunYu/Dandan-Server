@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     DANDAN_APP_SECRET: str
     
     # 缓存配置
-    CACHE_EXPIRE_MINUTES: int = 60  # 缓存过期时间（分钟）
+    CACHE_EXPIRE_MINUTES: int = 1440
     
     class Config:
         env_file = ".env"

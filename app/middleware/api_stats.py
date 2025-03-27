@@ -5,6 +5,7 @@ from app.database import AsyncSessionLocal
 from app.models.api_stats import ApiStats
 import time
 import json
+from datetime import datetime, UTC
 
 class ApiStatsMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -35,7 +36,8 @@ class ApiStatsMiddleware(BaseHTTPMiddleware):
                     method=request.method,
                     status_code=response.status_code,
                     response_time=response_time,
-                    params=params
+                    params=params,
+                    timestamp=datetime.now(UTC)
                 )
                 session.add(stats)
                 await session.commit()
@@ -51,7 +53,8 @@ class ApiStatsMiddleware(BaseHTTPMiddleware):
                     status_code=500,
                     response_time=int((time.time() - start_time) * 1000),
                     params=dict(request.query_params),
-                    error=str(e)
+                    error=str(e),
+                    timestamp=datetime.now(UTC)
                 )
                 session.add(stats)
                 await session.commit()

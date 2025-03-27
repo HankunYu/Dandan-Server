@@ -18,7 +18,7 @@ class DanmakuProxy:
         self.base_url = settings.DANDAN_API_BASE_URL
         self.client = httpx.AsyncClient()
         self.db = db
-        self.cache_ttl = timedelta(hours=24)  # 缓存有效期24小时
+        self.cache_ttl = timedelta(minutes=settings.CACHE_EXPIRE_MINUTES)
 
     async def get_danmaku(
         self,
@@ -136,6 +136,27 @@ class DanmakuProxy:
         Returns:
             MatchResponse: 匹配结果
         """
+        # 首先检查缓存中是否存在匹配记录
+        try:
+            stmt = select(FileMatch).where(FileMatch.file_hash == file_hash)
+            result = await self.db.execute(stmt)
+            existing_match = result.scalar_one_or_none()
+            
+            if existing_match:
+                logger.info(f"从缓存获取文件匹配记录: {file_name}")
+                return MatchResponse(
+                    isMatched=True,
+                    matches=[{
+                        'episodeId': existing_match.episode_id,
+                        'fileName': existing_match.file_name,
+                        'fileSize': existing_match.file_size,
+                        'videoDuration': existing_match.video_duration
+                    }]
+                )
+        except Exception as e:
+            logger.error(f"从缓存获取文件匹配记录时出错: {e}")
+
+        # 如果缓存不存在，从API获取数据
         path = "/api/v2/match"
         signature, timestamp, app_id = generate_signature(path)
         
@@ -183,7 +204,7 @@ class DanmakuProxy:
                         # 创建新的文件匹配记录
                         file_match = FileMatch(
                             file_hash=file_hash,
-                            episode_id=match_item['episodeId'],  # 修改这里，使用字典访问
+                            episode_id=match_item['episodeId'],
                             file_name=file_name,
                             file_size=file_size,
                             video_duration=video_duration
@@ -191,8 +212,6 @@ class DanmakuProxy:
                         self.db.add(file_match)
                         await self.db.commit()
                         logger.info(f"成功保存文件匹配记录: {file_name}")
-                    else:
-                        logger.info(f"文件已存在: {file_name}")
                 except Exception as e:
                     logger.error(f"保存文件匹配记录时出错: {e}")
                     await self.db.rollback()
