@@ -6,7 +6,7 @@ from app.database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 import os
 from dotenv import load_dotenv
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 # 加载环境变量
 load_dotenv()
@@ -37,6 +37,7 @@ async def get_danmaku(
     from_id: int = 0,
     with_related: bool = False,
     ch_convert: int = 0,
+    cache_ttl: Optional[int] = None,
     db: AsyncSession = Depends(get_db)
 ):
     proxy = DanmakuProxy(db)
@@ -45,7 +46,8 @@ async def get_danmaku(
             episode_id=episode_id,
             from_id=from_id,
             with_related=with_related,
-            ch_convert=ch_convert
+            ch_convert=ch_convert,
+            cache_ttl=cache_ttl
         )
         return result
     finally:
@@ -54,6 +56,7 @@ async def get_danmaku(
 @router.post("/match_with_danmaku")
 async def get_danmaku_with_detail(
     request: DanmakuWithDetailRequest,
+    cache_ttl: Optional[int] = None,
     db: AsyncSession = Depends(get_db)
 ) -> Dict[str, Any]:
     """
@@ -61,6 +64,7 @@ async def get_danmaku_with_detail(
     
     Args:
         request: 包含文件信息和弹幕获取参数的请求
+        cache_ttl: 缓存过期时间（分钟），如果为None则使用默认配置
         db: 数据库会话
         
     Returns:
@@ -76,7 +80,8 @@ async def get_danmaku_with_detail(
             match_mode=request.match_mode,
             from_id=request.from_id,
             with_related=request.with_related,
-            ch_convert=request.ch_convert
+            ch_convert=request.ch_convert,
+            cache_ttl=cache_ttl
         )
         return result or {}
     finally:
