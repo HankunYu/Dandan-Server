@@ -25,7 +25,8 @@ class DanmakuProxy:
         episode_id: int,
         from_id: int = 0,
         with_related: bool = True,
-        ch_convert: int = 0
+        ch_convert: int = 0,
+        cache_ttl: Optional[int] = None
     ) -> Optional[Dict[str, Any]]:
         """
         从弹弹play获取弹幕数据，支持数据库缓存
@@ -35,15 +36,19 @@ class DanmakuProxy:
             from_id: 起始弹幕编号，忽略此编号以前的弹幕
             with_related: 是否同时获取关联的第三方弹幕
             ch_convert: 中文简繁转换。0-不转换，1-转换为简体，2-转换为繁体
+            cache_ttl: 缓存过期时间（分钟），如果为None则使用默认配置
             
         Returns:
             Optional[Dict[str, Any]]: 弹幕数据
         """
+        # 使用传入的缓存时间或默认配置
+        ttl = timedelta(minutes=cache_ttl) if cache_ttl is not None else self.cache_ttl
+        
         # 首先尝试从缓存获取数据
         try:
             stmt = select(DanmakuCache).where(
                 DanmakuCache.episode_id == episode_id,
-                DanmakuCache.updated_at >= datetime.now() - self.cache_ttl
+                DanmakuCache.updated_at >= datetime.now() - ttl
             )
             result = await self.db.execute(stmt)
             cached_data = result.scalar_one_or_none()
@@ -237,7 +242,8 @@ class DanmakuProxy:
         match_mode: str = "hashAndFileName",
         from_id: int = 0,
         with_related: bool = True,
-        ch_convert: int = 0
+        ch_convert: int = 0,
+        cache_ttl: Optional[int] = None
     ) -> Optional[Dict[str, Any]]:
         """
         通过文件信息匹配节目并获取弹幕数据
@@ -251,6 +257,7 @@ class DanmakuProxy:
             from_id: 起始弹幕编号，忽略此编号以前的弹幕
             with_related: 是否同时获取关联的第三方弹幕
             ch_convert: 中文简繁转换。0-不转换，1-转换为简体，2-转换为繁体
+            cache_ttl: 缓存过期时间（分钟），如果为None则使用默认配置
             
         Returns:
             Optional[Dict[str, Any]]: 弹幕数据，如果匹配失败则返回 None
@@ -273,7 +280,8 @@ class DanmakuProxy:
                 episode_id=episode_id,
                 from_id=from_id,
                 with_related=with_related,
-                ch_convert=ch_convert
+                ch_convert=ch_convert,
+                cache_ttl=cache_ttl
             )
         
         logger.warning(f"文件匹配失败: {file_name}")
