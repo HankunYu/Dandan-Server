@@ -376,6 +376,46 @@ class DanmakuProxy:
             logger.error(f"搜索动画时发生意外错误: {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
+    async def search_anime(self, keyword: str, anime_type: Optional[str] = None) -> Dict[str, Any]:
+        """
+        根据关键词搜索动画作品
+
+        Args:
+            keyword: 搜索关键词，至少两个字符
+            anime_type: 限定的动画类型，可选
+
+        Returns:
+            Dict[str, Any]: 搜索结果
+        """
+        path = "/api/v2/search/anime"
+        signature, timestamp, app_id = generate_signature(path)
+
+        params = {"keyword": keyword}
+        if anime_type:
+            params["type"] = anime_type
+
+        headers = {
+            "X-AppId": app_id,
+            "X-Timestamp": timestamp,
+            "X-Signature": signature
+        }
+
+        try:
+            response = await self.client.get(
+                f"{self.base_url}{path}",
+                params=params,
+                headers=headers,
+                follow_redirects=True
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            logger.error(f"搜索作品时发生HTTP错误: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+        except Exception as e:
+            logger.error(f"搜索作品时发生意外错误: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
     async def close(self):
         """关闭HTTP客户端"""
-        await self.client.aclose() 
+        await self.client.aclose()

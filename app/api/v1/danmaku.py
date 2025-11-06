@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from app.services.proxy import DanmakuProxy
 from app.models.danmaku import MatchResponse
 from app.models.requests import FileMatchRequest, DanmakuWithDetailRequest, TmdbSearchRequest
@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import os
 from dotenv import load_dotenv
 from typing import Dict, Any, List, Optional
+from app.models.search import AnimeType, AnimeSearchResponse
 
 # 加载环境变量
 load_dotenv()
@@ -110,4 +111,23 @@ async def search_by_tmdb(
         )
         return result
     finally:
-        await proxy.close() 
+        await proxy.close()
+
+@router.get("/search/anime", response_model=AnimeSearchResponse)
+async def search_anime(
+    keyword: str = Query(..., min_length=2, description="搜索关键词，至少两个字符"),
+    anime_type: Optional[AnimeType] = Query(None, alias="type"),
+    db: AsyncSession = Depends(get_db)
+) -> AnimeSearchResponse:
+    """
+    根据关键词搜索作品
+    """
+    proxy = DanmakuProxy(db)
+    try:
+        result = await proxy.search_anime(
+            keyword=keyword,
+            anime_type=anime_type.value if anime_type else None
+        )
+        return AnimeSearchResponse(**result)
+    finally:
+        await proxy.close()
