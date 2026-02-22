@@ -24,6 +24,10 @@ class DanmakuCache(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
+    __table_args__ = (
+        UniqueConstraint('episode_id', name='uix_episode_id'),
+    )
+
 class MatchItem(BaseModel):
     episodeId: int
     animeId: int

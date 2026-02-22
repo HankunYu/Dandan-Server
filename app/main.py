@@ -39,9 +39,4 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    logger.info("应用程序关闭")
-
-@app.on_event("startup")
-async def startup_event():
-    """应用启动时初始化数据库"""
-    await init_db() 
+    logger.info("应用程序关闭") 

@@ -13,7 +13,7 @@ if db_dir and not os.path.exists(db_dir):
 # 创建异步引擎
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=True,
+    echo=False,  # 生产环境关闭SQL日志输出
     future=True
 )
 
