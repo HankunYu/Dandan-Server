@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dandan Server 监控面板</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #131722; --border: #1f2533;
+    --text: #e6e9f0; --muted: #8b93a7;
+    --accent: #5b8cff; --green: #34d399; --amber: #fbbf24; --red: #f87171; --violet: #a78bfa;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    padding: 24px; min-height: 100vh;
+  }
+  header { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+  header h1 { font-size: 20px; font-weight: 700; letter-spacing: .3px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 12px; border-radius: 999px; font-size: 13px; font-weight: 600;
+    background: rgba(52,211,153,.12); color: var(--green); border: 1px solid rgba(52,211,153,.3);
+  }
+  .pill.bad { background: rgba(248,113,113,.12); color: var(--red); border-color: rgba(248,113,113,.3); }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; animation: blink 2s infinite; }
+  @keyframes blink { 50% { opacity: .4; } }
+  .meta { color: var(--muted); font-size: 13px; margin-left: auto; display: flex; gap: 16px; }
+  .grid { display: grid; gap: 14px; }
+  .cards { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: 14px; }
+  .card, .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 16px;
+  }
+  .card .label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+  .card .value { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .card .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .charts { grid-template-columns: 3fr 2fr; margin-bottom: 14px; }
+  .panels { grid-template-columns: 1fr 1fr 1fr; }
+  .panel h2 { font-size: 14px; font-weight: 600; color: var(--muted); margin-bottom: 12px; }
+  .kv { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .kv:last-child { border-bottom: none; }
+  .kv .k { color: var(--muted); }
+  .kv .v { font-weight: 600; font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  td { padding: 5px 6px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: none; }
+  .status-tag { padding: 1px 7px; border-radius: 6px; font-weight: 600; font-size: 11px; }
+  .s5 { background: rgba(248,113,113,.15); color: var(--red); }
+  .empty { color: var(--muted); text-align: center; padding: 18px 0; font-size: 13px; }
+  canvas { max-height: 320px; }
+  @media (max-width: 1100px) { .charts, .panels { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>🍙 Dandan Server</h1>
+  <span class="pill" id="statusPill"><span class="dot"></span><span id="statusText">加载中…</span></span>
+  <div class="meta">
+    <span id="uptime"></span>
+    <span id="refreshIn"></span>
+  </div>
+</header>
+
+<div class="grid cards">
+  <div class="card"><div class="label">24小时请求</div><div class="value" id="c-total">–</div><div class="sub" id="c-lasthour"></div></div>
+  <div class="card"><div class="label">平均响应</div><div class="value" id="c-avg">–</div><div class="sub">24小时窗口</div></div>
+  <div class="card"><div class="label">5xx 错误</div><div class="value" id="c-5xx">–</div><div class="sub" id="c-4xx"></div></div>
+  <div class="card"><div class="label">上游请求</div><div class="value" id="c-up">–</div><div class="sub">本进程累计</div></div>
+  <div class="card"><div class="label">上游 429</div><div class="value" id="c-429">–</div><div class="sub" id="c-trips"></div></div>
+  <div class="card"><div class="label">弹幕缓存命中率</div><div class="value" id="c-hitrate">–</div><div class="sub">本进程（含过期兜底）</div></div>
+</div>
+
+<div class="grid charts">
+  <div class="panel"><h2>24小时请求趋势</h2><canvas id="hourlyChart"></canvas></div>
+  <div class="panel"><h2>端点分布（24小时）</h2><canvas id="catChart"></canvas></div>
+</div>
+
+<div class="grid panels">
+  <div class="panel">
+    <h2>上游与队列状态</h2>
+    <div class="kv"><span class="k">配额熔断</span><span class="v" id="r-breaker">–</span></div>
+    <div class="kv"><span class="k">冷却中条目</span><span class="v" id="r-cooldowns">–</span></div>
+    <div class="kv"><span class="k">后台刷新队列</span><span class="v" id="r-queue">–</span></div>
+    <div class="kv"><span class="k">后台刷新 成功 / 失败</span><span class="v" id="r-refresh">–</span></div>
+    <div class="kv"><span class="k">进行中的回源</span><span class="v" id="r-inflight">–</span></div>
+    <div class="kv"><span class="k">弹幕 命中/兜底/回源/拒绝</span><span class="v" id="r-danmaku">–</span></div>
+    <div class="kv"><span class="k">match 命中/负缓存/回源</span><span class="v" id="r-match">–</span></div>
+    <div class="kv"><span class="k">TMDB 命中/回源</span><span class="v" id="r-tmdb">–</span></div>
+  </div>
+  <div class="panel">
+    <h2>缓存规模</h2>
+    <div class="kv"><span class="k">弹幕缓存</span><span class="v" id="k-danmaku">–</span></div>
+    <div class="kv"><span class="k">文件匹配缓存</span><span class="v" id="k-match">–</span></div>
+    <div class="kv"><span class="k">未匹配负缓存</span><span class="v" id="k-negative">–</span></div>
+    <div class="kv"><span class="k">TMDB缓存</span><span class="v" id="k-tmdb">–</span></div>
+  </div>
+  <div class="panel">
+    <h2>最近 5xx 错误</h2>
+    <div id="errorsBox"><div class="empty">暂无</div></div>
+  </div>
+</div>
+
+<script>
+const token = new URLSearchParams(location.search).get('token') || '';
+const REFRESH_SECONDS = 30;
+let hourlyChart = null, catChart = null, countdown = REFRESH_SECONDS;
+
+const fmt = n => (n ?? 0).toLocaleString('zh-CN');
+const $ = id => document.getElementById(id);
+
+function fmtUptime(s) {
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return (d ? d + '天 ' : '') + h + '小时 ' + m + '分';
+}
+function fmtLocal(iso) {
+  return new Date(iso).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+async function load() {
+  const res = await fetch('/api/v1/stats/data?token=' + encodeURIComponent(token));
+  if (!res.ok) { $('statusText').textContent = '加载失败 ' + res.status; $('statusPill').classList.add('bad'); return; }
+  const d = await res.json();
+  const m = d.upstream.metrics;
+
+  // 状态与总览
+  const breaker = d.upstream.quota_breaker_remaining;
+  $('statusPill').classList.toggle('bad', breaker > 0);
+  $('statusText').textContent = breaker > 0 ? `配额熔断中 (剩余${Math.ceil(breaker / 60)}分)` : '运行正常';
+  $('uptime').textContent = '已运行 ' + fmtUptime(d.upstream.uptime_seconds);
+  $('c-total').textContent = fmt(d.overview.total_24h);
+  $('c-lasthour').textContent = '近1小时 ' + fmt(d.overview.last_hour);
+  $('c-avg').textContent = fmt(d.overview.avg_ms) + ' ms';
+  $('c-5xx').textContent = fmt(d.overview.errors_5xx);
+  $('c-4xx').textContent = '4xx ' + fmt(d.overview.errors_4xx);
+  $('c-up').textContent = fmt(m.upstream_requests);
+  $('c-429').textContent = fmt(m.upstream_429);
+  $('c-trips').textContent = '熔断触发 ' + fmt(m.quota_breaker_trips) + ' 次';
+
+  const served = m.danmaku_cache_hit + m.danmaku_stale_served;
+  const allDanmaku = served + m.danmaku_cold_fetch + m.danmaku_blocked;
+  $('c-hitrate').textContent = allDanmaku ? Math.round(served / allDanmaku * 100) + '%' : '–';
+
+  // 运行时面板
+  $('r-breaker').textContent = breaker > 0 ? `激活，剩余 ${Math.ceil(breaker / 60)} 分` : '未触发';
+  $('r-breaker').style.color = breaker > 0 ? 'var(--red)' : 'var(--green)';
+  $('r-cooldowns').textContent = fmt(d.upstream.active_cooldowns);
+  $('r-queue').textContent = fmt(d.upstream.refresh_queue_size);
+  $('r-refresh').textContent = `${fmt(m.refresh_done)} / ${fmt(m.refresh_fail)}`;
+  $('r-inflight').textContent = fmt(d.upstream.inflight_requests);
+  $('r-danmaku').textContent = `${fmt(m.danmaku_cache_hit)} / ${fmt(m.danmaku_stale_served)} / ${fmt(m.danmaku_cold_fetch)} / ${fmt(m.danmaku_blocked)}`;
+  $('r-match').textContent = `${fmt(m.match_cache_hit)} / ${fmt(m.match_negative_hit)} / ${fmt(m.match_upstream)}`;
+  $('r-tmdb').textContent = `${fmt(m.tmdb_cache_hit)} / ${fmt(m.tmdb_upstream)}`;
+
+  // 缓存规模
+  $('k-danmaku').textContent = fmt(d.caches.danmaku);
+  $('k-match').textContent = fmt(d.caches.file_match);
+  $('k-negative').textContent = fmt(d.caches.match_negative);
+  $('k-tmdb').textContent = fmt(d.caches.tmdb);
+
+  // 错误表
+  if (d.recent_errors.length) {
+    $('errorsBox').innerHTML = '<table><tr><th>时间</th><th>端点</th><th>状态</th></tr>' +
+      d.recent_errors.map(e =>
+        `<tr><td>${fmtLocal(e.time)}</td><td>${e.endpoint}</td><td><span class="status-tag s5">${e.status}</span></td></tr>`
+      ).join('') + '</table>';
+  } else {
+    $('errorsBox').innerHTML = '<div class="empty">24小时内无 5xx 错误 🎉</div>';
+  }
+
+  drawHourly(d.hourly);
+  drawCategories(d.categories);
+}
+
+function drawHourly(rows) {
+  const labels = rows.map(r => new Date(r.hour).toLocaleTimeString('zh-CN', { hour: '2-digit' }));
+  const cfg = {
+    data: {
+      labels,
+      datasets: [
+        { type: 'bar', label: '2xx', data: rows.map(r => r.s2xx), backgroundColor: 'rgba(52,211,153,.75)', stack: 's' },
+        { type: 'bar', label: '4xx', data: rows.map(r => r.s4xx), backgroundColor: 'rgba(251,191,36,.75)', stack: 's' },
+        { type: 'bar', label: '5xx', data: rows.map(r => r.s5xx), backgroundColor: 'rgba(248,113,113,.8)', stack: 's' },
+        { type: 'line', label: '平均响应(ms)', data: rows.map(r => r.avg_ms), yAxisID: 'y2',
+          borderColor: 'rgba(91,140,255,.9)', backgroundColor: 'rgba(91,140,255,.9)',
+          tension: .35, pointRadius: 2, borderWidth: 2 },
+      ]
+    },
+    options: {
+      responsive: true, interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { labels: { color: '#8b93a7', boxWidth: 12, font: { size: 11 } } } },
+      scales: {
+        x: { stacked: true, ticks: { color: '#8b93a7', font: { size: 10 } }, grid: { color: '#1f2533' } },
+        y: { stacked: true, ticks: { color: '#8b93a7', font: { size: 10 } }, grid: { color: '#1f2533' } },
+        y2: { position: 'right', ticks: { color: 'rgba(91,140,255,.8)', font: { size: 10 } }, grid: { display: false } },
+      }
+    }
+  };
+  if (hourlyChart) { hourlyChart.data = cfg.data; hourlyChart.update('none'); }
+  else hourlyChart = new Chart($('hourlyChart'), cfg);
+}
+
+function drawCategories(rows) {
+  const palette = ['#5b8cff', '#34d399', '#a78bfa', '#fbbf24', '#f87171', '#8b93a7'];
+  const cfg = {
+    type: 'bar',
+    data: {
+      labels: rows.map(r => r.name),
+      datasets: [{ label: '请求数', data: rows.map(r => r.count),
+        backgroundColor: rows.map((_, i) => palette[i % palette.length] + 'cc'), borderRadius: 6 }]
+    },
+    options: {
+      indexAxis: 'y', responsive: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { afterLabel: ctx => {
+          const r = rows[ctx.dataIndex];
+          return `平均 ${r.avg_ms}ms · 错误 ${r.errors}`;
+        } } }
+      },
+      scales: {
+        x: { ticks: { color: '#8b93a7', font: { size: 10 } }, grid: { color: '#1f2533' } },
+        y: { ticks: { color: '#e6e9f0', font: { size: 12 } }, grid: { display: false } },
+      }
+    }
+  };
+  if (catChart) { catChart.data = cfg.data; catChart.update('none'); }
+  else catChart = new Chart($('catChart'), cfg);
+}
+
+setInterval(() => {
+  countdown--;
+  if (countdown <= 0) { countdown = REFRESH_SECONDS; load(); }
+  $('refreshIn').textContent = countdown + 's 后刷新';
+}, 1000);
+
+load();
+</script>
+</body>
+</html>
