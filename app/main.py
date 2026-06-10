@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .api.v1 import danmaku, stats
 from .database import init_db
+from .services import upstream
 from app.utils.logger import setup_logger
 import logging
 from app.middleware.api_stats import ApiStatsMiddleware
@@ -33,10 +34,13 @@ app.include_router(danmaku.router, prefix="/api/v1", tags=["danmaku"])
 
 @app.on_event("startup")
 async def startup_event():
-    """应用启动时初始化数据库"""
+    """应用启动时初始化数据库和后台刷新任务"""
     await init_db()
+    upstream.start_refresh_worker()
     logger.info("应用程序启动")
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    await upstream.stop_refresh_worker()
+    await upstream.close_client()
     logger.info("应用程序关闭") 

@@ -3,20 +3,37 @@ import logging
 from typing import Dict, Any, Optional, List
 from ..config import settings
 from .signature import generate_signature
+from . import upstream
 from fastapi import HTTPException
 from app.models.danmaku import MatchResponse, DanmakuCache, TmdbCache
-from app.models.file_match import FileMatch
+from app.models.file_match import FileMatch, MatchFailureCache
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from datetime import datetime, timedelta
 
 # 配置日志记录器
 logger = logging.getLogger(__name__)
 
+
+def jittered_ttl(episode_id: int) -> timedelta:
+    """默认TTL加上按episode确定性的随机抖动
+
+    同一波写入的缓存如果都用固定TTL，会在24小时后的同一时刻集体过期，
+    与客户端的定时重试洪峰精确对齐。抖动把过期时间摊开。
+    """
+    base = settings.CACHE_EXPIRE_MINUTES
+    # 抖动不超过基础TTL的1/4，避免小TTL时有效期变负
+    jitter_range = min(settings.CACHE_TTL_JITTER_MINUTES, base // 4)
+    if jitter_range <= 0:
+        return timedelta(minutes=base)
+    # Knuth multiplicative hash keeps the jitter stable per episode
+    jitter = (episode_id * 2654435761) % (2 * jitter_range + 1) - jitter_range
+    return timedelta(minutes=base + jitter)
+
+
 class DanmakuProxy:
     def __init__(self, db: AsyncSession):
         self.base_url = settings.DANDAN_API_BASE_URL
-        self.client = httpx.AsyncClient()
         self.db = db
         self.cache_ttl = timedelta(minutes=settings.CACHE_EXPIRE_MINUTES)
 
@@ -41,81 +58,76 @@ class DanmakuProxy:
         Returns:
             Optional[Dict[str, Any]]: 弹幕数据
         """
-        # 使用传入的缓存时间或默认配置
-        ttl = timedelta(minutes=cache_ttl) if cache_ttl is not None else self.cache_ttl
-        
-        # 首先尝试从缓存获取数据
+        # 显式传入的cache_ttl优先，否则使用带抖动的默认TTL
+        if cache_ttl is not None:
+            ttl = timedelta(minutes=cache_ttl)
+        else:
+            ttl = jittered_ttl(episode_id)
+
+        # 读取缓存（不论新旧）
+        cached: Optional[DanmakuCache] = None
         try:
-            stmt = select(DanmakuCache).where(
-                DanmakuCache.episode_id == episode_id,
-                DanmakuCache.updated_at >= datetime.now() - ttl
-            )
+            stmt = select(DanmakuCache).where(DanmakuCache.episode_id == episode_id)
             result = await self.db.execute(stmt)
-            cached_data = result.scalar_one_or_none()
-            
-            if cached_data:
-                logger.info(f"从缓存获取弹幕数据: episode_id={episode_id}")
-                return cached_data.data
+            cached = result.scalar_one_or_none()
         except Exception as e:
             logger.error(f"从缓存获取弹幕数据时出错: {e}")
 
-        # 如果缓存不存在或已过期，从API获取数据
-        path = f"/api/v2/comment/{episode_id}"
-        signature, timestamp, app_id = generate_signature(path)
-        
-        headers = {
-            'X-AppId': app_id,
-            'X-Timestamp': timestamp,
-            'X-Signature': signature
-        }
-        
-        params = {
-            'from': from_id,
-            'withRelated': str(with_related).lower(),
-            'chConvert': ch_convert
-        }
-        
-        try:
-            response = await self.client.get(
-                f"{self.base_url}{path}",
-                params=params,
-                headers=headers,
-                follow_redirects=True
+        if cached is not None:
+            # 旧数据没有updated_at时回退到created_at判断新鲜度
+            cached_at = cached.updated_at or cached.created_at
+            if cached_at is not None and cached_at >= datetime.now() - ttl:
+                upstream.inc_metric("danmaku_cache_hit")
+                logger.info(f"从缓存获取弹幕数据: episode_id={episode_id}")
+                return cached.data
+
+            # Stale-while-revalidate：立即返回过期数据，后台匀速刷新
+            upstream.inc_metric("danmaku_stale_served")
+            if upstream.enqueue_refresh(episode_id):
+                logger.info(f"返回过期缓存并安排后台刷新: episode_id={episode_id}")
+            else:
+                logger.info(f"返回过期缓存(已在刷新队列或冷却中): episode_id={episode_id}")
+            return cached.data
+
+        # 完全没有缓存，必须同步回源；冷却期/配额熔断期内直接拒绝，避免撞限流
+        cooldown = max(
+            upstream.cooldown_remaining(f"{upstream.DANMAKU_COOLDOWN_PREFIX}{episode_id}"),
+            upstream.quota_cooldown_remaining(),
+        )
+        if cooldown > 0:
+            upstream.inc_metric("danmaku_blocked")
+            raise HTTPException(
+                status_code=503,
+                detail="上游接口限流冷却中，请稍后重试",
+                headers={"Retry-After": str(max(1, int(cooldown)))}
             )
-            response.raise_for_status()
-            data = response.json()
-            
-            # 保存到缓存
-            try:
-                # 检查是否已存在缓存
-                stmt = select(DanmakuCache).where(DanmakuCache.episode_id == episode_id)
-                result = await self.db.execute(stmt)
-                existing_cache = result.scalar_one_or_none()
-                
-                if existing_cache:
-                    # 更新现有缓存
-                    existing_cache.data = data
-                    existing_cache.updated_at = datetime.now()
-                    logger.info(f"更新弹幕数据缓存: episode_id={episode_id}")
-                else:
-                    # 创建新缓存
-                    cache = DanmakuCache(
-                        episode_id=episode_id,
-                        data=data
-                    )
-                    self.db.add(cache)
-                    logger.info(f"创建弹幕数据缓存: episode_id={episode_id}")
-                
-                await self.db.commit()
-            except Exception as e:
-                logger.error(f"保存弹幕数据到缓存时出错: {e}")
-                await self.db.rollback()
-            
-            return data
-            
+
+        try:
+            # Single-flight合并相同episode的并发回源
+            upstream.inc_metric("danmaku_cold_fetch")
+            return await upstream.single_flight(
+                f"{upstream.DANMAKU_COOLDOWN_PREFIX}{episode_id}",
+                lambda: upstream.fetch_and_cache_danmaku(
+                    episode_id=episode_id,
+                    from_id=from_id,
+                    with_related=with_related,
+                    ch_convert=ch_convert,
+                ),
+            )
+        except httpx.HTTPStatusError as e:
+            logger.error(f"获取弹幕数据时发生HTTP错误: {e}")
+            if e.response.status_code == 429:
+                raise HTTPException(
+                    status_code=503,
+                    detail="上游接口限流，请稍后重试",
+                    headers={"Retry-After": str(settings.FAILURE_COOLDOWN_MINUTES * 60)}
+                )
+            raise HTTPException(status_code=500, detail=str(e))
         except httpx.HTTPError as e:
             logger.error(f"获取弹幕数据时发生HTTP错误: {e}")
             raise HTTPException(status_code=500, detail=str(e))
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"获取弹幕数据时发生意外错误: {e}")
             raise HTTPException(status_code=500, detail=str(e))
@@ -148,6 +160,7 @@ class DanmakuProxy:
             existing_match = result.scalar_one_or_none()
             
             if existing_match:
+                upstream.inc_metric("match_cache_hit")
                 logger.info(f"从缓存获取文件匹配记录: {file_name}")
                 return MatchResponse(
                     isMatched=True,
@@ -160,6 +173,30 @@ class DanmakuProxy:
                 )
         except Exception as e:
             logger.error(f"从缓存获取文件匹配记录时出错: {e}")
+
+        # 检查负缓存：近期已确认无法匹配的文件直接返回，不再回源
+        try:
+            stmt = select(MatchFailureCache).where(MatchFailureCache.file_hash == file_hash)
+            result = await self.db.execute(stmt)
+            failure = result.scalar_one_or_none()
+            if failure is not None and failure.updated_at is not None:
+                ttl = timedelta(days=settings.MATCH_NEGATIVE_CACHE_DAYS)
+                if failure.updated_at >= datetime.now() - ttl:
+                    upstream.inc_metric("match_negative_hit")
+                    logger.info(f"命中未匹配负缓存: {file_name}")
+                    return MatchResponse(isMatched=False, matches=[])
+        except Exception as e:
+            logger.error(f"读取未匹配负缓存时出错: {e}")
+
+        # 全局配额熔断期间不再回源
+        if upstream.quota_cooldown_remaining() > 0:
+            return MatchResponse(
+                errorCode=429,
+                success=False,
+                errorMessage="上游接口配额受限，请稍后重试",
+                isMatched=False,
+                matches=[]
+            )
 
         # 如果缓存不存在，从API获取数据
         path = "/api/v2/match"
@@ -181,7 +218,9 @@ class DanmakuProxy:
         }
         
         try:
-            response = await self.client.post(
+            upstream.inc_metric("match_upstream")
+            response = await upstream.throttled_request(
+                "POST",
                 f"{self.base_url}{path}",
                 json=data,
                 headers=headers
@@ -191,7 +230,11 @@ class DanmakuProxy:
             
             if not isinstance(result, dict):
                 raise ValueError("Invalid response format")
-            
+
+            # 上游返回"配额上限"时触发全局熔断
+            if result.get('errorCode') == 429:
+                upstream.trip_quota_breaker()
+
             # 确保 matches 字段是列表类型
             if result.get('matches') is None:
                 result['matches'] = []
@@ -204,7 +247,7 @@ class DanmakuProxy:
                     stmt = select(FileMatch).where(FileMatch.file_hash == file_hash)
                     existing = await self.db.execute(stmt)
                     existing_match = existing.scalar_one_or_none()
-                    
+
                     if not existing_match:
                         # 创建新的文件匹配记录
                         file_match = FileMatch(
@@ -220,7 +263,13 @@ class DanmakuProxy:
                 except Exception as e:
                     logger.error(f"保存文件匹配记录时出错: {e}")
                     await self.db.rollback()
-                
+                # 匹配成功后清除可能存在的负缓存（官方库后来收录了该文件）
+                await self._clear_match_failure(file_hash)
+            elif result.get('success', True):
+                # 上游明确返回"无匹配"（非上游错误）→ 写入负缓存，
+                # 避免刮削插件每个扫描周期对同一批无法匹配的文件重复回源
+                await self._save_match_failure(file_hash, file_name)
+
             return MatchResponse(**result)
             
         except Exception as e:
@@ -232,6 +281,38 @@ class DanmakuProxy:
                 isMatched=False,
                 matches=[]
             )
+
+    async def _save_match_failure(self, file_hash: str, file_name: str) -> None:
+        """记录或刷新一条未匹配负缓存"""
+        try:
+            stmt = select(MatchFailureCache).where(MatchFailureCache.file_hash == file_hash)
+            result = await self.db.execute(stmt)
+            existing = result.scalar_one_or_none()
+
+            if existing:
+                existing.file_name = file_name
+                existing.updated_at = datetime.now()
+            else:
+                self.db.add(MatchFailureCache(
+                    file_hash=file_hash,
+                    file_name=file_name,
+                    updated_at=datetime.now()
+                ))
+            await self.db.commit()
+            logger.info(f"记录未匹配负缓存: {file_name}")
+        except Exception as e:
+            logger.error(f"保存未匹配负缓存时出错: {e}")
+            await self.db.rollback()
+
+    async def _clear_match_failure(self, file_hash: str) -> None:
+        """删除该文件的负缓存记录（如存在）"""
+        try:
+            stmt = delete(MatchFailureCache).where(MatchFailureCache.file_hash == file_hash)
+            await self.db.execute(stmt)
+            await self.db.commit()
+        except Exception as e:
+            logger.error(f"清除未匹配负缓存时出错: {e}")
+            await self.db.rollback()
 
     async def get_danmaku_with_detail(
         self,
@@ -273,9 +354,7 @@ class DanmakuProxy:
         
         # 如果匹配成功，获取弹幕数据
         if match_result.isMatched and match_result.matches:
-            print(match_result.matches[0])
             episode_id = match_result.matches[0]['episodeId']
-            print(episode_id)
             return await self.get_danmaku(
                 episode_id=episode_id,
                 from_id=from_id,
@@ -308,10 +387,20 @@ class DanmakuProxy:
             cached_data = result.scalar_one_or_none()
             
             if cached_data:
+                upstream.inc_metric("tmdb_cache_hit")
                 logger.info(f"从缓存获取TMDB搜索结果: tmdb_id={tmdb_id}, episode={episode}")
                 return cached_data.data
         except Exception as e:
             logger.error(f"从缓存获取TMDB搜索结果时出错: {e}")
+
+        # 全局配额熔断期间不再回源
+        quota_wait = upstream.quota_cooldown_remaining()
+        if quota_wait > 0:
+            raise HTTPException(
+                status_code=503,
+                detail="上游接口配额受限，请稍后重试",
+                headers={"Retry-After": str(max(1, int(quota_wait)))}
+            )
 
         # 如果缓存不存在，从API获取数据
         path = f"/api/v2/search/episodes"
@@ -329,7 +418,9 @@ class DanmakuProxy:
         }
         
         try:
-            response = await self.client.get(
+            upstream.inc_metric("tmdb_upstream")
+            response = await upstream.throttled_request(
+                "GET",
                 f"{self.base_url}{path}",
                 params=params,
                 headers=headers,
@@ -337,6 +428,16 @@ class DanmakuProxy:
             )
             response.raise_for_status()
             data = response.json()
+
+            # 上游返回错误响应（如配额上限）时不写缓存，避免永久污染缓存
+            if isinstance(data, dict) and data.get('success') is False:
+                if data.get('errorCode') == 429:
+                    upstream.trip_quota_breaker()
+                logger.warning(
+                    f"TMDB搜索上游返回错误，不缓存: tmdb_id={tmdb_id}, "
+                    f"episode={episode}, errorCode={data.get('errorCode')}"
+                )
+                return data
 
             # 保存到缓存
             try:
@@ -401,7 +502,8 @@ class DanmakuProxy:
         }
 
         try:
-            response = await self.client.get(
+            response = await upstream.throttled_request(
+                "GET",
                 f"{self.base_url}{path}",
                 params=params,
                 headers=headers,
@@ -417,5 +519,5 @@ class DanmakuProxy:
             raise HTTPException(status_code=500, detail=str(e))
 
     async def close(self):
-        """关闭HTTP客户端"""
-        await self.client.aclose()
+        """保留以兼容现有调用；共享HTTP客户端在应用关闭时统一关闭"""
+        pass

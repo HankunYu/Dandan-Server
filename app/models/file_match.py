@@ -17,4 +17,18 @@ class FileMatch(Base):
     # 添加唯一约束，确保同一个hash不会重复添加
     __table_args__ = (
         UniqueConstraint('file_hash', name='uix_file_hash'),
+    )
+
+
+class MatchFailureCache(Base):
+    """未匹配文件负缓存：记录确认无法匹配的文件，TTL内不再回源查询"""
+    __tablename__ = "match_failure_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    file_hash = Column(String(32), nullable=False)
+    file_name = Column(String(255))
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint('file_hash', name='uix_failure_file_hash'),
     ) 

@@ -12,7 +12,26 @@ class Settings(BaseSettings):
     
     # 缓存配置
     CACHE_EXPIRE_MINUTES: int = 1440
-    
+    # 缓存过期时间随机抖动范围（分钟），避免同一批缓存在同一时刻集体过期
+    CACHE_TTL_JITTER_MINUTES: int = 180
+
+    # 上游节流配置
+    UPSTREAM_MAX_CONCURRENCY: int = 2
+    UPSTREAM_MIN_INTERVAL_MS: int = 600
+    # 上游429后该episode的冷却时间（分钟），冷却期内不再回源
+    FAILURE_COOLDOWN_MINUTES: int = 30
+    # 未匹配文件负缓存有效期（天），期内同一文件不再回源查询match
+    MATCH_NEGATIVE_CACHE_DAYS: int = 3
+    # 上游返回"配额上限"后的全局熔断时间（分钟），期间所有未命中缓存的请求不再回源
+    QUOTA_COOLDOWN_MINUTES: int = 10
+
+    # 后台缓存刷新配置
+    REFRESH_INTERVAL_SECONDS: float = 2.0
+    REFRESH_QUEUE_MAX: int = 2000
+
+    # 监控面板访问token，为空则禁用面板
+    DASHBOARD_TOKEN: str = ""
+
     class Config:
         env_file = ".env"
 
