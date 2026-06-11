@@ -50,11 +50,14 @@ class TmdbSearchRequest(BaseModel):
     """TMDB ID搜索请求模型"""
     tmdb_id: int
     episode: int
+    # tmdbId类型：0=电视剧（默认），1=电影，与弹弹play上游的tmdbIdType参数一致
+    tmdb_id_type: Optional[int] = 0
 
     class Config:
         json_schema_extra = {
             "example": {
                 "tmdb_id": 100049,
-                "episode": 2
+                "episode": 2,
+                "tmdb_id_type": 0
             }
         } 

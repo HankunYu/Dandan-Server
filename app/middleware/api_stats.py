@@ -21,6 +21,19 @@ class ApiStatsMiddleware(BaseHTTPMiddleware):
         start_time = time.time()
         error_message = None
 
+        # 必须在call_next之前读取body：starlette 0.28+会把缓冲的body重放给下游，
+        # 响应结束后流已被消费，再读只会得到空内容
+        params = None
+        if request.method in ("POST", "PUT"):
+            try:
+                body = await request.body()
+                if body:
+                    params = json.loads(body)
+            except Exception:
+                pass
+        else:
+            params = dict(request.query_params)
+
         try:
             response = await call_next(request)
             status_code = response.status_code
@@ -32,17 +45,6 @@ class ApiStatsMiddleware(BaseHTTPMiddleware):
             # 统计写入失败绝不影响正常请求
             try:
                 response_time = int((time.time() - start_time) * 1000)
-
-                params = None
-                if request.method in ("POST", "PUT"):
-                    try:
-                        body = await request.body()
-                        if body:
-                            params = json.loads(body)
-                    except Exception:
-                        pass
-                else:
-                    params = dict(request.query_params)
 
                 async with AsyncSessionLocal() as session:
                     session.add(ApiStats(

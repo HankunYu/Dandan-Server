@@ -107,7 +107,8 @@ async def search_by_tmdb(
     try:
         result = await proxy.search_by_tmdb(
             tmdb_id=request.tmdb_id,
-            episode=request.episode
+            episode=request.episode,
+            tmdb_id_type=request.tmdb_id_type or 0
         )
         return result
     finally:

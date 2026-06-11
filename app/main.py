@@ -1,6 +1,11 @@
-from fastapi import FastAPI
+from urllib.parse import quote
+
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
+from fastapi.responses import JSONResponse
 from .api.v1 import danmaku, stats
+from .api.v1.stats import verify_token
 from .database import init_db
 from .services import upstream
 from app.utils.logger import setup_logger
@@ -11,11 +16,39 @@ from app.middleware.api_stats import ApiStatsMiddleware
 setup_logger()
 logger = logging.getLogger(__name__)
 
+# 关闭自动生成的文档路由，下方以token保护的方式重新提供
 app = FastAPI(
     title="Dandan Server",
     description="A proxy server for Dandanplay API",
-    version="1.0.0"
+    version="1.0.0",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
+
+
+@app.get("/openapi.json", include_in_schema=False)
+async def openapi_json(token: str = Query("")) -> JSONResponse:
+    verify_token(token)
+    return JSONResponse(app.openapi())
+
+
+@app.get("/docs", include_in_schema=False)
+async def swagger_docs(token: str = Query("")):
+    verify_token(token)
+    return get_swagger_ui_html(
+        openapi_url=f"/openapi.json?token={quote(token)}",
+        title="Dandan Server - Docs",
+    )
+
+
+@app.get("/redoc", include_in_schema=False)
+async def redoc_docs(token: str = Query("")):
+    verify_token(token)
+    return get_redoc_html(
+        openapi_url=f"/openapi.json?token={quote(token)}",
+        title="Dandan Server - ReDoc",
+    )
 
 # 配置CORS
 app.add_middleware(

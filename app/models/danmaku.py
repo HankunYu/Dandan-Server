@@ -50,11 +50,13 @@ class TmdbCache(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     tmdb_id = Column(Integer, index=True, nullable=False)
+    # tmdbId类型：0=电视剧（默认），1=电影，与弹弹play上游的tmdbIdType参数一致
+    id_type = Column(Integer, nullable=False, default=0, server_default="0")
     episode = Column(Integer, nullable=False)
     data = Column(JSON, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     __table_args__ = (
-        UniqueConstraint('tmdb_id', 'episode', name='uix_tmdb_episode'),
+        UniqueConstraint('tmdb_id', 'id_type', 'episode', name='uix_tmdb_episode'),
     )

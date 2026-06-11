@@ -49,8 +49,20 @@
   td { padding: 5px 6px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
   tr:last-child td { border-bottom: none; }
   .status-tag { padding: 1px 7px; border-radius: 6px; font-weight: 600; font-size: 11px; }
+  .s2 { background: rgba(52,211,153,.15); color: var(--green); }
+  .s3 { background: rgba(139,147,167,.15); color: var(--muted); }
+  .s4 { background: rgba(251,191,36,.15); color: var(--amber); }
   .s5 { background: rgba(248,113,113,.15); color: var(--red); }
+  .cat-tag { padding: 1px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; white-space: nowrap; }
   .empty { color: var(--muted); text-align: center; padding: 18px 0; font-size: 13px; }
+  .panel.wide { margin-top: 14px; }
+  .scrollbox { max-height: 430px; overflow-y: auto; }
+  .scrollbox table { table-layout: fixed; }
+  .scrollbox th:nth-child(1), .scrollbox td:nth-child(1) { width: 92px; }
+  .scrollbox th:nth-child(2), .scrollbox td:nth-child(2) { width: 96px; }
+  .scrollbox th:nth-child(4), .scrollbox td:nth-child(4) { width: 56px; }
+  .scrollbox th:nth-child(5), .scrollbox td:nth-child(5) { width: 72px; text-align: right; }
+  .detail-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   canvas { max-height: 320px; }
   @media (max-width: 1100px) { .charts, .panels { grid-template-columns: 1fr; } }
 </style>
@@ -102,6 +114,11 @@
     <h2>最近 5xx 错误</h2>
     <div id="errorsBox"><div class="empty">暂无</div></div>
   </div>
+</div>
+
+<div class="panel wide">
+  <h2>最近请求（最新 50 条）</h2>
+  <div id="recentBox" class="scrollbox"><div class="empty">加载中…</div></div>
 </div>
 
 <script>
@@ -171,8 +188,40 @@ async function load() {
     $('errorsBox').innerHTML = '<div class="empty">24小时内无 5xx 错误 🎉</div>';
   }
 
+  // 最近请求表
+  renderRecent(d.recent_requests || []);
+
   drawHourly(d.hourly);
   drawCategories(d.categories);
+}
+
+const CAT_COLORS = {
+  '弹幕获取': 'rgba(91,140,255,.15);color:var(--accent)',
+  '文件匹配': 'rgba(52,211,153,.15);color:var(--green)',
+  '匹配+弹幕': 'rgba(167,139,250,.15);color:var(--violet)',
+  'TMDB搜索': 'rgba(251,191,36,.15);color:var(--amber)',
+  '作品搜索': 'rgba(251,191,36,.15);color:var(--amber)',
+  '其他/扫描': 'rgba(248,113,113,.15);color:var(--red)',
+};
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function renderRecent(rows) {
+  if (!rows.length) { $('recentBox').innerHTML = '<div class="empty">暂无请求</div>'; return; }
+  $('recentBox').innerHTML = '<table><tr><th>时间</th><th>类别</th><th>内容</th><th>状态</th><th>耗时</th></tr>' +
+    rows.map(r => {
+      const catStyle = CAT_COLORS[r.category] || 'rgba(139,147,167,.15);color:var(--muted)';
+      const detail = esc(r.detail);
+      const content = r.url
+        ? `<a href="${esc(r.url)}" target="_blank" rel="noopener" style="color:var(--accent)">${detail} ↗</a>`
+        : detail;
+      return `<tr>
+        <td>${fmtLocal(r.time)}</td>
+        <td><span class="cat-tag" style="background:${catStyle}">${r.category}</span></td>
+        <td class="detail-cell" title="${detail}">${content}</td>
+        <td><span class="status-tag s${Math.floor(r.status / 100)}">${r.status}</span></td>
+        <td>${fmt(r.ms)} ms</td>
+      </tr>`;
+    }).join('') + '</table>';
 }
 
 function drawHourly(rows) {

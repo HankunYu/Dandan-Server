@@ -366,36 +366,54 @@ class DanmakuProxy:
         logger.warning(f"文件匹配失败: {file_name}")
         return None
 
-    async def search_by_tmdb(self, tmdb_id: int, episode: int) -> Dict[str, Any]:
+    async def search_by_tmdb(self, tmdb_id: int, episode: int, tmdb_id_type: int = 0) -> Dict[str, Any]:
         """
         通过TMDB ID搜索动画剧集，支持缓存
-        
+
         Args:
             tmdb_id: TMDB ID
             episode: 集数
-            
+            tmdb_id_type: tmdbId类型，0=电视剧（默认），1=电影
+
         Returns:
             Dict[str, Any]: 搜索结果
         """
-        # 首先尝试从缓存获取数据
+        # 首先尝试从缓存获取数据。
+        # 有结果的条目永久有效；空结果只在TTL内有效，过期后重新回源，
+        # 以便查到后续才被弹弹play收录的作品（过期的空结果保留作回源失败时的兜底）
+        stale_empty: Optional[Dict[str, Any]] = None
         try:
             stmt = select(TmdbCache).where(
                 TmdbCache.tmdb_id == tmdb_id,
+                TmdbCache.id_type == tmdb_id_type,
                 TmdbCache.episode == episode
             )
             result = await self.db.execute(stmt)
             cached_data = result.scalar_one_or_none()
-            
+
             if cached_data:
-                upstream.inc_metric("tmdb_cache_hit")
-                logger.info(f"从缓存获取TMDB搜索结果: tmdb_id={tmdb_id}, episode={episode}")
-                return cached_data.data
+                data = cached_data.data
+                is_empty = isinstance(data, dict) and not data.get('animes')
+                cached_at = cached_data.updated_at or cached_data.created_at
+                empty_expired = is_empty and (
+                    cached_at is None or
+                    datetime.now() - cached_at > timedelta(days=settings.TMDB_EMPTY_RESULT_TTL_DAYS)
+                )
+                if empty_expired:
+                    stale_empty = data
+                    logger.info(f"TMDB空结果缓存过期，重新回源: tmdb_id={tmdb_id}, type={tmdb_id_type}, episode={episode}")
+                else:
+                    upstream.inc_metric("tmdb_cache_hit")
+                    logger.info(f"从缓存获取TMDB搜索结果: tmdb_id={tmdb_id}, type={tmdb_id_type}, episode={episode}")
+                    return data
         except Exception as e:
             logger.error(f"从缓存获取TMDB搜索结果时出错: {e}")
 
         # 全局配额熔断期间不再回源
         quota_wait = upstream.quota_cooldown_remaining()
         if quota_wait > 0:
+            if stale_empty is not None:
+                return stale_empty
             raise HTTPException(
                 status_code=503,
                 detail="上游接口配额受限，请稍后重试",
@@ -408,9 +426,12 @@ class DanmakuProxy:
         
         params = {
             'tmdbId': tmdb_id,
-            'episode': episode
+            'tmdbIdType': tmdb_id_type
         }
-        
+        # 电影没有集数概念，传数字episode会被上游按集数过滤导致空结果，仅TV类型传递
+        if tmdb_id_type == 0:
+            params['episode'] = episode
+
         headers = {
             'X-AppId': app_id,
             'X-Timestamp': timestamp,
@@ -437,32 +458,34 @@ class DanmakuProxy:
                     f"TMDB搜索上游返回错误，不缓存: tmdb_id={tmdb_id}, "
                     f"episode={episode}, errorCode={data.get('errorCode')}"
                 )
-                return data
+                return stale_empty if stale_empty is not None else data
 
             # 保存到缓存
             try:
                 # 检查是否已存在缓存
                 stmt = select(TmdbCache).where(
                     TmdbCache.tmdb_id == tmdb_id,
+                    TmdbCache.id_type == tmdb_id_type,
                     TmdbCache.episode == episode
                 )
                 result = await self.db.execute(stmt)
                 existing_cache = result.scalar_one_or_none()
-                
+
                 if existing_cache:
                     # 更新现有缓存
                     existing_cache.data = data
                     existing_cache.updated_at = datetime.now()
-                    logger.info(f"更新TMDB搜索结果缓存: tmdb_id={tmdb_id}, episode={episode}")
+                    logger.info(f"更新TMDB搜索结果缓存: tmdb_id={tmdb_id}, type={tmdb_id_type}, episode={episode}")
                 else:
                     # 创建新缓存
                     cache = TmdbCache(
                         tmdb_id=tmdb_id,
+                        id_type=tmdb_id_type,
                         episode=episode,
                         data=data
                     )
                     self.db.add(cache)
-                    logger.info(f"创建TMDB搜索结果缓存: tmdb_id={tmdb_id}, episode={episode}")
+                    logger.info(f"创建TMDB搜索结果缓存: tmdb_id={tmdb_id}, type={tmdb_id_type}, episode={episode}")
                 
                 await self.db.commit()
             except Exception as e:
@@ -472,9 +495,13 @@ class DanmakuProxy:
             return data
         except httpx.HTTPError as e:
             logger.error(f"搜索动画时发生HTTP错误: {e}")
+            if stale_empty is not None:
+                return stale_empty
             raise HTTPException(status_code=500, detail=str(e))
         except Exception as e:
             logger.error(f"搜索动画时发生意外错误: {e}")
+            if stale_empty is not None:
+                return stale_empty
             raise HTTPException(status_code=500, detail=str(e))
 
     async def search_anime(self, keyword: str, anime_type: Optional[str] = None) -> Dict[str, Any]:
