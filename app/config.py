@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # 监控面板访问token，为空则禁用面板
     DASHBOARD_TOKEN: str = ""
 
+    # api_stats retention in days; older rows are purged daily. 0 = keep forever
+    API_STATS_RETENTION_DAYS: int = 7
+
     class Config:
         env_file = ".env"
 

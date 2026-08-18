@@ -8,6 +8,7 @@ from .api.v1 import danmaku, stats
 from .api.v1.stats import verify_token
 from .database import init_db
 from .services import upstream
+from .services.stats_retention import start_retention_worker, stop_retention_worker
 from app.utils.logger import setup_logger
 import logging
 from app.middleware.api_stats import ApiStatsMiddleware
@@ -70,10 +71,12 @@ async def startup_event():
     """应用启动时初始化数据库和后台刷新任务"""
     await init_db()
     upstream.start_refresh_worker()
+    start_retention_worker()
     logger.info("应用程序启动")
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    await stop_retention_worker()
     await upstream.stop_refresh_worker()
     await upstream.close_client()
     logger.info("应用程序关闭") 
