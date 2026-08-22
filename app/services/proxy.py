@@ -5,7 +5,7 @@ from ..config import settings
 from .signature import generate_signature
 from . import ip_budget, upstream
 from fastapi import HTTPException
-from app.models.danmaku import MatchResponse, DanmakuCache, TmdbCache
+from app.models.danmaku import MatchResponse, DanmakuCache, TmdbCache, TmdbSeriesNegative
 from app.models.file_match import FileMatch, MatchFailureCache
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
@@ -13,6 +13,15 @@ from datetime import datetime, timedelta
 
 # 配置日志记录器
 logger = logging.getLogger(__name__)
+
+# 上游"无结果"响应的标准形状，系列级负缓存命中时直接返回
+EMPTY_SEARCH_RESULT = {
+    "hasMore": False,
+    "animes": [],
+    "errorCode": 0,
+    "success": True,
+    "errorMessage": ""
+}
 
 
 def jittered_ttl(episode_id: int) -> timedelta:
@@ -436,6 +445,12 @@ class DanmakuProxy:
         except Exception as e:
             logger.error(f"从缓存获取TMDB搜索结果时出错: {e}")
 
+        # 系列级负缓存：整部确认无结果的作品直接返回空，不再逐集回源
+        if await self._series_negative_fresh(tmdb_id, tmdb_id_type):
+            upstream.inc_metric("tmdb_series_negative_hit")
+            logger.info(f"命中系列级负缓存: tmdb_id={tmdb_id}, type={tmdb_id_type}")
+            return stale_empty if stale_empty is not None else dict(EMPTY_SEARCH_RESULT)
+
         # 搜索组配额熔断期间不再回源
         quota_wait = upstream.quota_cooldown_remaining(upstream.QUOTA_GROUP_SEARCH)
         if quota_wait > 0:
@@ -523,7 +538,17 @@ class DanmakuProxy:
             except Exception as e:
                 logger.error(f"保存TMDB搜索结果到缓存时出错: {e}")
                 await self.db.rollback()
-            
+
+            # 维护系列级负缓存：电影查询本就不带集数、结果即系列级定论；
+            # 电视剧空结果可能只是该集缺失，需一次不带集数的探测来确认整部是否无结果
+            is_empty = isinstance(data, dict) and not data.get('animes')
+            if not is_empty:
+                await self._clear_series_negative(tmdb_id, tmdb_id_type)
+            elif tmdb_id_type == 1:
+                await self._save_series_negative(tmdb_id, tmdb_id_type)
+            else:
+                await self._probe_series_negative(tmdb_id, tmdb_id_type)
+
             return data
         except httpx.HTTPError as e:
             logger.error(f"搜索动画时发生HTTP错误: {e}")
@@ -535,6 +560,96 @@ class DanmakuProxy:
             if stale_empty is not None:
                 return stale_empty
             raise HTTPException(status_code=500, detail=str(e))
+
+    async def _series_negative_fresh(self, tmdb_id: int, id_type: int) -> bool:
+        """该作品是否有未过期的系列级负缓存记录"""
+        try:
+            stmt = select(TmdbSeriesNegative).where(
+                TmdbSeriesNegative.tmdb_id == tmdb_id,
+                TmdbSeriesNegative.id_type == id_type
+            )
+            result = await self.db.execute(stmt)
+            record = result.scalar_one_or_none()
+            if record is not None and record.updated_at is not None:
+                ttl = timedelta(days=settings.TMDB_EMPTY_RESULT_TTL_DAYS)
+                return record.updated_at >= datetime.now() - ttl
+        except Exception as e:
+            logger.error(f"读取系列级负缓存时出错: {e}")
+        return False
+
+    async def _save_series_negative(self, tmdb_id: int, id_type: int) -> None:
+        """记录或刷新一条系列级负缓存"""
+        try:
+            stmt = select(TmdbSeriesNegative).where(
+                TmdbSeriesNegative.tmdb_id == tmdb_id,
+                TmdbSeriesNegative.id_type == id_type
+            )
+            result = await self.db.execute(stmt)
+            existing = result.scalar_one_or_none()
+
+            if existing:
+                existing.updated_at = datetime.now()
+            else:
+                self.db.add(TmdbSeriesNegative(
+                    tmdb_id=tmdb_id,
+                    id_type=id_type,
+                    updated_at=datetime.now()
+                ))
+            await self.db.commit()
+            logger.info(f"记录系列级负缓存: tmdb_id={tmdb_id}, type={id_type}")
+        except Exception as e:
+            logger.error(f"保存系列级负缓存时出错: {e}")
+            await self.db.rollback()
+
+    async def _clear_series_negative(self, tmdb_id: int, id_type: int) -> None:
+        """删除该作品的系列级负缓存记录（如存在，作品后来被弹弹play收录）"""
+        try:
+            stmt = delete(TmdbSeriesNegative).where(
+                TmdbSeriesNegative.tmdb_id == tmdb_id,
+                TmdbSeriesNegative.id_type == id_type
+            )
+            await self.db.execute(stmt)
+            await self.db.commit()
+        except Exception as e:
+            logger.error(f"清除系列级负缓存时出错: {e}")
+            await self.db.rollback()
+
+    async def _probe_series_negative(self, tmdb_id: int, id_type: int) -> None:
+        """不带集数探测整部作品，确认无结果则写入系列级负缓存
+
+        每部作品每个TTL周期只发生一次，把逐集空查询收敛为一次探测。
+        探测失败只影响负缓存收敛速度，绝不影响主请求的返回。
+        """
+        if not ip_budget.try_consume(self.client_ip):
+            return
+        try:
+            path = "/api/v2/search/episodes"
+            signature, timestamp, app_id = generate_signature(path)
+            headers = {
+                'X-AppId': app_id,
+                'X-Timestamp': timestamp,
+                'X-Signature': signature
+            }
+            upstream.inc_metric("tmdb_upstream")
+            response = await upstream.throttled_request(
+                "GET",
+                f"{self.base_url}{path}",
+                params={'tmdbId': tmdb_id, 'tmdbIdType': id_type},
+                headers=headers,
+                follow_redirects=True
+            )
+            response.raise_for_status()
+            probe = response.json()
+            if not isinstance(probe, dict):
+                return
+            if probe.get('success') is False:
+                if probe.get('errorCode') == 429:
+                    upstream.trip_quota_breaker(upstream.QUOTA_GROUP_SEARCH)
+                return
+            if not probe.get('animes'):
+                await self._save_series_negative(tmdb_id, id_type)
+        except Exception as e:
+            logger.warning(f"系列级探测失败: tmdb_id={tmdb_id}, type={id_type}: {e}")
 
     async def search_anime(self, keyword: str, anime_type: Optional[str] = None) -> Dict[str, Any]:
         """

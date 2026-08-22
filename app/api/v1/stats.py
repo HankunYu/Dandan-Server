@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
-from app.models.danmaku import DanmakuCache, TmdbCache
+from app.models.danmaku import DanmakuCache, TmdbCache, TmdbSeriesNegative
 from app.models.file_match import FileMatch, MatchFailureCache
 from app.services import ip_budget, upstream
 
@@ -268,6 +268,7 @@ async def dashboard_data(
         "file_match": (await db.execute(select(func.count()).select_from(FileMatch))).scalar(),
         "match_negative": (await db.execute(select(func.count()).select_from(MatchFailureCache))).scalar(),
         "tmdb": (await db.execute(select(func.count()).select_from(TmdbCache))).scalar(),
+        "tmdb_series_negative": (await db.execute(select(func.count()).select_from(TmdbSeriesNegative))).scalar(),
     }
 
     total, avg_ms, e4xx, e5xx = overview_row

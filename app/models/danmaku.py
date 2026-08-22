@@ -60,3 +60,17 @@ class TmdbCache(Base):
     __table_args__ = (
         UniqueConstraint('tmdb_id', 'id_type', 'episode', name='uix_tmdb_episode'),
     )
+
+
+class TmdbSeriesNegative(Base):
+    """系列级TMDB负缓存：该作品在弹弹play整部无结果，逐集查询无需再回源"""
+    __tablename__ = "tmdb_series_negative"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tmdb_id = Column(Integer, index=True, nullable=False)
+    id_type = Column(Integer, nullable=False, default=0, server_default="0")
+    updated_at = Column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('tmdb_id', 'id_type', name='uix_tmdb_series_negative'),
+    )

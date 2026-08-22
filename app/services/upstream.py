@@ -40,6 +40,7 @@ metrics: Dict[str, int] = {
     "match_upstream": 0,          # match回源
     "ip_budget_blocked": 0,       # 超出单IP每日回源预算被拒(429)
     "tmdb_cache_hit": 0,          # tmdb缓存命中
+    "tmdb_series_negative_hit": 0, # tmdb系列级负缓存命中
     "tmdb_upstream": 0,           # tmdb回源
     "refresh_done": 0,            # 后台刷新成功
     "refresh_fail": 0,            # 后台刷新失败

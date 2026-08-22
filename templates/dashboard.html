@@ -102,7 +102,7 @@
     <div class="kv"><span class="k">进行中的回源</span><span class="v" id="r-inflight">–</span></div>
     <div class="kv"><span class="k">弹幕 命中/兜底/回源/拒绝</span><span class="v" id="r-danmaku">–</span></div>
     <div class="kv"><span class="k">match 命中/负缓存/回源</span><span class="v" id="r-match">–</span></div>
-    <div class="kv"><span class="k">TMDB 命中/回源</span><span class="v" id="r-tmdb">–</span></div>
+    <div class="kv"><span class="k">TMDB 命中/系列负/回源</span><span class="v" id="r-tmdb">–</span></div>
   </div>
   <div class="panel">
     <h2>缓存规模</h2>
@@ -110,6 +110,7 @@
     <div class="kv"><span class="k">文件匹配缓存</span><span class="v" id="k-match">–</span></div>
     <div class="kv"><span class="k">未匹配负缓存</span><span class="v" id="k-negative">–</span></div>
     <div class="kv"><span class="k">TMDB缓存</span><span class="v" id="k-tmdb">–</span></div>
+    <div class="kv"><span class="k">TMDB系列级负缓存</span><span class="v" id="k-tmdb-series">–</span></div>
   </div>
   <div class="panel">
     <h2>最近 5xx 错误</h2>
@@ -180,13 +181,14 @@ async function load() {
   $('r-inflight').textContent = fmt(d.upstream.inflight_requests);
   $('r-danmaku').textContent = `${fmt(m.danmaku_cache_hit)} / ${fmt(m.danmaku_stale_served)} / ${fmt(m.danmaku_cold_fetch)} / ${fmt(m.danmaku_blocked)}`;
   $('r-match').textContent = `${fmt(m.match_cache_hit)} / ${fmt(m.match_negative_hit)} / ${fmt(m.match_upstream)}`;
-  $('r-tmdb').textContent = `${fmt(m.tmdb_cache_hit)} / ${fmt(m.tmdb_upstream)}`;
+  $('r-tmdb').textContent = `${fmt(m.tmdb_cache_hit)} / ${fmt(m.tmdb_series_negative_hit)} / ${fmt(m.tmdb_upstream)}`;
 
   // 缓存规模
   $('k-danmaku').textContent = fmt(d.caches.danmaku);
   $('k-match').textContent = fmt(d.caches.file_match);
   $('k-negative').textContent = fmt(d.caches.match_negative);
   $('k-tmdb').textContent = fmt(d.caches.tmdb);
+  $('k-tmdb-series').textContent = fmt(d.caches.tmdb_series_negative);
 
   // 错误表
   if (d.recent_errors.length) {
