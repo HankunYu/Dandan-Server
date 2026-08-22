@@ -3,7 +3,7 @@ import logging
 from typing import Dict, Any, Optional, List
 from ..config import settings
 from .signature import generate_signature
-from . import upstream
+from . import ip_budget, upstream
 from fastapi import HTTPException
 from app.models.danmaku import MatchResponse, DanmakuCache, TmdbCache
 from app.models.file_match import FileMatch, MatchFailureCache
@@ -32,10 +32,25 @@ def jittered_ttl(episode_id: int) -> timedelta:
 
 
 class DanmakuProxy:
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, client_ip: Optional[str] = None):
         self.base_url = settings.DANDAN_API_BASE_URL
         self.db = db
+        self.client_ip = client_ip
         self.cache_ttl = timedelta(minutes=settings.CACHE_EXPIRE_MINUTES)
+
+    def _consume_ip_budget(self) -> bool:
+        """尝试为本次回源扣减该IP的每日预算，超额返回False"""
+        if ip_budget.try_consume(self.client_ip):
+            return True
+        upstream.inc_metric("ip_budget_blocked")
+        return False
+
+    def _ip_budget_exceeded(self) -> HTTPException:
+        return HTTPException(
+            status_code=429,
+            detail="已达到单IP每日回源限额，请明天再试",
+            headers={"Retry-After": str(ip_budget.seconds_until_reset())}
+        )
 
     async def get_danmaku(
         self,
@@ -92,7 +107,7 @@ class DanmakuProxy:
         # 完全没有缓存，必须同步回源；冷却期/配额熔断期内直接拒绝，避免撞限流
         cooldown = max(
             upstream.cooldown_remaining(f"{upstream.DANMAKU_COOLDOWN_PREFIX}{episode_id}"),
-            upstream.quota_cooldown_remaining(),
+            upstream.quota_cooldown_remaining(upstream.QUOTA_GROUP_COMMENT),
         )
         if cooldown > 0:
             upstream.inc_metric("danmaku_blocked")
@@ -101,6 +116,9 @@ class DanmakuProxy:
                 detail="上游接口限流冷却中，请稍后重试",
                 headers={"Retry-After": str(max(1, int(cooldown)))}
             )
+
+        if not self._consume_ip_budget():
+            raise self._ip_budget_exceeded()
 
         try:
             # Single-flight合并相同episode的并发回源
@@ -188,12 +206,21 @@ class DanmakuProxy:
         except Exception as e:
             logger.error(f"读取未匹配负缓存时出错: {e}")
 
-        # 全局配额熔断期间不再回源
-        if upstream.quota_cooldown_remaining() > 0:
+        # 识别组配额熔断期间不再回源
+        if upstream.quota_cooldown_remaining(upstream.QUOTA_GROUP_MATCH) > 0:
             return MatchResponse(
                 errorCode=429,
                 success=False,
                 errorMessage="上游接口配额受限，请稍后重试",
+                isMatched=False,
+                matches=[]
+            )
+
+        if not self._consume_ip_budget():
+            return MatchResponse(
+                errorCode=429,
+                success=False,
+                errorMessage="已达到单IP每日回源限额，请明天再试",
                 isMatched=False,
                 matches=[]
             )
@@ -231,9 +258,9 @@ class DanmakuProxy:
             if not isinstance(result, dict):
                 raise ValueError("Invalid response format")
 
-            # 上游返回"配额上限"时触发全局熔断
+            # 上游返回"配额上限"时熔断识别组
             if result.get('errorCode') == 429:
-                upstream.trip_quota_breaker()
+                upstream.trip_quota_breaker(upstream.QUOTA_GROUP_MATCH)
 
             # 确保 matches 字段是列表类型
             if result.get('matches') is None:
@@ -409,8 +436,8 @@ class DanmakuProxy:
         except Exception as e:
             logger.error(f"从缓存获取TMDB搜索结果时出错: {e}")
 
-        # 全局配额熔断期间不再回源
-        quota_wait = upstream.quota_cooldown_remaining()
+        # 搜索组配额熔断期间不再回源
+        quota_wait = upstream.quota_cooldown_remaining(upstream.QUOTA_GROUP_SEARCH)
         if quota_wait > 0:
             if stale_empty is not None:
                 return stale_empty
@@ -419,6 +446,11 @@ class DanmakuProxy:
                 detail="上游接口配额受限，请稍后重试",
                 headers={"Retry-After": str(max(1, int(quota_wait)))}
             )
+
+        if not self._consume_ip_budget():
+            if stale_empty is not None:
+                return stale_empty
+            raise self._ip_budget_exceeded()
 
         # 如果缓存不存在，从API获取数据
         path = f"/api/v2/search/episodes"
@@ -453,7 +485,7 @@ class DanmakuProxy:
             # 上游返回错误响应（如配额上限）时不写缓存，避免永久污染缓存
             if isinstance(data, dict) and data.get('success') is False:
                 if data.get('errorCode') == 429:
-                    upstream.trip_quota_breaker()
+                    upstream.trip_quota_breaker(upstream.QUOTA_GROUP_SEARCH)
                 logger.warning(
                     f"TMDB搜索上游返回错误，不缓存: tmdb_id={tmdb_id}, "
                     f"episode={episode}, errorCode={data.get('errorCode')}"
@@ -515,6 +547,18 @@ class DanmakuProxy:
         Returns:
             Dict[str, Any]: 搜索结果
         """
+        # 关键词搜索无缓存，每次都消耗上游配额，与tmdb搜索共用搜索组熔断与IP预算
+        quota_wait = upstream.quota_cooldown_remaining(upstream.QUOTA_GROUP_SEARCH)
+        if quota_wait > 0:
+            raise HTTPException(
+                status_code=503,
+                detail="上游接口配额受限，请稍后重试",
+                headers={"Retry-After": str(max(1, int(quota_wait)))}
+            )
+
+        if not self._consume_ip_budget():
+            raise self._ip_budget_exceeded()
+
         path = "/api/v2/search/anime"
         signature, timestamp, app_id = generate_signature(path)
 
@@ -537,7 +581,10 @@ class DanmakuProxy:
                 follow_redirects=True
             )
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            if isinstance(data, dict) and data.get('success') is False and data.get('errorCode') == 429:
+                upstream.trip_quota_breaker(upstream.QUOTA_GROUP_SEARCH)
+            return data
         except httpx.HTTPError as e:
             logger.error(f"搜索作品时发生HTTP错误: {e}")
             raise HTTPException(status_code=500, detail=str(e))

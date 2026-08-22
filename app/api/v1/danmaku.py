@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from app.services.proxy import DanmakuProxy
 from app.models.danmaku import MatchResponse
 from app.models.requests import FileMatchRequest, DanmakuWithDetailRequest, TmdbSearchRequest
 from app.database import get_db
+from app.utils.http import get_client_ip
 from sqlalchemy.ext.asyncio import AsyncSession
 import os
 from dotenv import load_dotenv
@@ -17,9 +18,10 @@ router = APIRouter()
 @router.post("/match", response_model=MatchResponse)
 async def match_file(
     request: FileMatchRequest,
+    http_request: Request,
     db: AsyncSession = Depends(get_db)
 ) -> MatchResponse:
-    proxy = DanmakuProxy(db)
+    proxy = DanmakuProxy(db, client_ip=get_client_ip(http_request))
     try:
         result = await proxy.match_file(
             file_name=request.file_name,
@@ -35,13 +37,14 @@ async def match_file(
 @router.get("/{episode_id}")
 async def get_danmaku(
     episode_id: int,
+    http_request: Request,
     from_id: int = 0,
     with_related: bool = False,
     ch_convert: int = 0,
     cache_ttl: Optional[int] = None,
     db: AsyncSession = Depends(get_db)
 ):
-    proxy = DanmakuProxy(db)
+    proxy = DanmakuProxy(db, client_ip=get_client_ip(http_request))
     try:
         result = await proxy.get_danmaku(
             episode_id=episode_id,
@@ -57,6 +60,7 @@ async def get_danmaku(
 @router.post("/match_with_danmaku")
 async def get_danmaku_with_detail(
     request: DanmakuWithDetailRequest,
+    http_request: Request,
     cache_ttl: Optional[int] = None,
     db: AsyncSession = Depends(get_db)
 ) -> Dict[str, Any]:
@@ -71,7 +75,7 @@ async def get_danmaku_with_detail(
     Returns:
         Dict[str, Any]: 弹幕数据，如果匹配失败则返回空字典
     """
-    proxy = DanmakuProxy(db)
+    proxy = DanmakuProxy(db, client_ip=get_client_ip(http_request))
     try:
         result = await proxy.get_danmaku_with_detail(
             file_name=request.file_name,
@@ -91,6 +95,7 @@ async def get_danmaku_with_detail(
 @router.post("/search/tmdb")
 async def search_by_tmdb(
     request: TmdbSearchRequest,
+    http_request: Request,
     db: AsyncSession = Depends(get_db)
 ) -> Dict[str, Any]:
     """
@@ -103,7 +108,7 @@ async def search_by_tmdb(
     Returns:
         Dict[str, Any]: 搜索结果，包含匹配的动画信息和剧集信息
     """
-    proxy = DanmakuProxy(db)
+    proxy = DanmakuProxy(db, client_ip=get_client_ip(http_request))
     try:
         result = await proxy.search_by_tmdb(
             tmdb_id=request.tmdb_id,
@@ -116,6 +121,7 @@ async def search_by_tmdb(
 
 @router.get("/search/anime", response_model=AnimeSearchResponse)
 async def search_anime(
+    http_request: Request,
     keyword: str = Query(..., min_length=2, description="搜索关键词，至少两个字符"),
     anime_type: Optional[AnimeType] = Query(None, alias="type"),
     db: AsyncSession = Depends(get_db)
@@ -123,7 +129,7 @@ async def search_anime(
     """
     根据关键词搜索作品
     """
-    proxy = DanmakuProxy(db)
+    proxy = DanmakuProxy(db, client_ip=get_client_ip(http_request))
     try:
         result = await proxy.search_anime(
             keyword=keyword,

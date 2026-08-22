@@ -24,8 +24,10 @@ class Settings(BaseSettings):
     MATCH_NEGATIVE_CACHE_DAYS: int = 1
     # TMDB搜索空结果的缓存有效期（天），过期后重新回源以便查到后续被弹弹play收录的作品；有结果的条目永久缓存
     TMDB_EMPTY_RESULT_TTL_DAYS: int = 7
-    # 上游返回"配额上限"后的全局熔断时间（分钟），期间所有未命中缓存的请求不再回源
+    # 上游返回"配额上限"后的熔断时间（分钟），按功能组独立熔断，期间该组未命中缓存的请求不再回源
     QUOTA_COOLDOWN_MINUTES: int = 10
+    # Per-IP daily budget of upstream-consuming (cache-miss) calls; 0 = unlimited
+    IP_DAILY_UPSTREAM_BUDGET: int = 200
 
     # 后台缓存刷新配置
     REFRESH_INTERVAL_SECONDS: float = 0.5

@@ -14,8 +14,13 @@ from .signature import generate_signature
 logger = logging.getLogger(__name__)
 
 DANMAKU_COOLDOWN_PREFIX = "danmaku:"
-# 全局配额熔断key：上游返回"已达到接口调用配额上限"(body errorCode=429)时触发
-QUOTA_COOLDOWN_KEY = "upstream:quota"
+# 配额熔断按上游功能组独立进行：上游返回"已达到接口调用配额上限"(body errorCode=429)时
+# 只熔断对应功能组，其余组照常回源（弹弹play按功能组分别计配额）
+QUOTA_GROUP_MATCH = "match"      # 文件识别 /api/v2/match
+QUOTA_GROUP_SEARCH = "search"    # 搜索 /api/v2/search/*
+QUOTA_GROUP_COMMENT = "comment"  # 获取弹幕 /api/v2/comment/*
+QUOTA_GROUPS = (QUOTA_GROUP_MATCH, QUOTA_GROUP_SEARCH, QUOTA_GROUP_COMMENT)
+_QUOTA_COOLDOWN_PREFIX = "upstream:quota:"
 
 # ---------------------------------------------------------------------------
 # 运行时指标：进程内计数器，供监控面板展示后端工作状态
@@ -33,6 +38,7 @@ metrics: Dict[str, int] = {
     "match_cache_hit": 0,         # match正缓存命中
     "match_negative_hit": 0,      # match负缓存命中
     "match_upstream": 0,          # match回源
+    "ip_budget_blocked": 0,       # 超出单IP每日回源预算被拒(429)
     "tmdb_cache_hit": 0,          # tmdb缓存命中
     "tmdb_upstream": 0,           # tmdb回源
     "refresh_done": 0,            # 后台刷新成功
@@ -51,7 +57,7 @@ def runtime_status() -> Dict[str, Any]:
     return {
         "started_at": STARTED_AT.isoformat(),
         "uptime_seconds": int((datetime.now() - STARTED_AT).total_seconds()),
-        "quota_breaker_remaining": int(quota_cooldown_remaining()),
+        "quota_breakers": {g: int(quota_cooldown_remaining(g)) for g in QUOTA_GROUPS},
         "active_cooldowns": sum(1 for v in _cooldowns.values() if v > now),
         "refresh_queue_size": _refresh_queue.qsize(),
         "refresh_pending": len(_refresh_pending),
@@ -60,17 +66,17 @@ def runtime_status() -> Dict[str, Any]:
     }
 
 
-def quota_cooldown_remaining() -> float:
-    """全局配额熔断剩余秒数，未熔断返回0"""
-    return cooldown_remaining(QUOTA_COOLDOWN_KEY)
+def quota_cooldown_remaining(group: str) -> float:
+    """该功能组配额熔断剩余秒数，未熔断返回0"""
+    return cooldown_remaining(f"{_QUOTA_COOLDOWN_PREFIX}{group}")
 
 
-def trip_quota_breaker() -> None:
-    """触发全局配额熔断"""
-    if cooldown_remaining(QUOTA_COOLDOWN_KEY) <= 0:
-        set_cooldown(QUOTA_COOLDOWN_KEY, settings.QUOTA_COOLDOWN_MINUTES)
+def trip_quota_breaker(group: str) -> None:
+    """触发指定功能组的配额熔断"""
+    if quota_cooldown_remaining(group) <= 0:
+        set_cooldown(f"{_QUOTA_COOLDOWN_PREFIX}{group}", settings.QUOTA_COOLDOWN_MINUTES)
         inc_metric("quota_breaker_trips")
-        logger.warning(f"上游配额已耗尽，全局熔断{settings.QUOTA_COOLDOWN_MINUTES}分钟")
+        logger.warning(f"上游[{group}]配额已耗尽，熔断{settings.QUOTA_COOLDOWN_MINUTES}分钟")
 
 # ---------------------------------------------------------------------------
 # 共享HTTP客户端（模块级单例，跨请求复用连接池）
@@ -284,7 +290,7 @@ async def _refresh_worker() -> None:
         episode_id = await _refresh_queue.get()
         try:
             # 配额熔断期间暂停刷新，等熔断结束再处理当前条目
-            quota_wait = quota_cooldown_remaining()
+            quota_wait = quota_cooldown_remaining(QUOTA_GROUP_COMMENT)
             if quota_wait > 0:
                 await asyncio.sleep(quota_wait)
             if cooldown_remaining(f"{DANMAKU_COOLDOWN_PREFIX}{episode_id}") > 0:

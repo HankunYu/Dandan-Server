@@ -13,7 +13,7 @@ from app.config import settings
 from app.database import get_db
 from app.models.danmaku import DanmakuCache, TmdbCache
 from app.models.file_match import FileMatch, MatchFailureCache
-from app.services import upstream
+from app.services import ip_budget, upstream
 
 router = APIRouter()
 
@@ -291,4 +291,5 @@ async def dashboard_data(
         "recent_requests": await _resolve_recent_requests(db),
         "caches": caches,
         "upstream": upstream.runtime_status(),
+        "ip_budget": ip_budget.snapshot(),
     }

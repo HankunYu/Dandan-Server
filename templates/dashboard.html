@@ -95,6 +95,7 @@
   <div class="panel">
     <h2>上游与队列状态</h2>
     <div class="kv"><span class="k">配额熔断</span><span class="v" id="r-breaker">–</span></div>
+    <div class="kv"><span class="k">单IP日回源预算</span><span class="v" id="r-ipbudget">–</span></div>
     <div class="kv"><span class="k">冷却中条目</span><span class="v" id="r-cooldowns">–</span></div>
     <div class="kv"><span class="k">后台刷新队列</span><span class="v" id="r-queue">–</span></div>
     <div class="kv"><span class="k">后台刷新 成功 / 失败</span><span class="v" id="r-refresh">–</span></div>
@@ -143,10 +144,13 @@ async function load() {
   const d = await res.json();
   const m = d.upstream.metrics;
 
-  // 状态与总览
-  const breaker = d.upstream.quota_breaker_remaining;
-  $('statusPill').classList.toggle('bad', breaker > 0);
-  $('statusText').textContent = breaker > 0 ? `配额熔断中 (剩余${Math.ceil(breaker / 60)}分)` : '运行正常';
+  // 状态与总览（配额熔断按功能组独立显示）
+  const GROUP_NAMES = { match: '识别', search: '搜索', comment: '弹幕' };
+  const breakers = Object.entries(d.upstream.quota_breakers || {}).filter(([, s]) => s > 0);
+  $('statusPill').classList.toggle('bad', breakers.length > 0);
+  $('statusText').textContent = breakers.length
+    ? '配额熔断: ' + breakers.map(([g, s]) => `${GROUP_NAMES[g] || g}(剩${Math.ceil(s / 60)}分)`).join(' · ')
+    : '运行正常';
   $('uptime').textContent = '已运行 ' + fmtUptime(d.upstream.uptime_seconds);
   $('c-total').textContent = fmt(d.overview.total_24h);
   $('c-lasthour').textContent = '近1小时 ' + fmt(d.overview.last_hour);
@@ -162,8 +166,14 @@ async function load() {
   $('c-hitrate').textContent = allDanmaku ? Math.round(served / allDanmaku * 100) + '%' : '–';
 
   // 运行时面板
-  $('r-breaker').textContent = breaker > 0 ? `激活，剩余 ${Math.ceil(breaker / 60)} 分` : '未触发';
-  $('r-breaker').style.color = breaker > 0 ? 'var(--red)' : 'var(--green)';
+  $('r-breaker').textContent = breakers.length
+    ? breakers.map(([g, s]) => `${GROUP_NAMES[g] || g} 剩${Math.ceil(s / 60)}分`).join(' · ')
+    : '未触发';
+  $('r-breaker').style.color = breakers.length ? 'var(--red)' : 'var(--green)';
+  const ib = d.ip_budget || {};
+  $('r-ipbudget').textContent = ib.budget > 0
+    ? `${fmt(ib.budget)}/IP · 今日活跃 ${fmt(ib.tracked_ips)} · 超额 ${fmt(ib.over_budget_ips)} · 拦截 ${fmt(m.ip_budget_blocked)}`
+    : '未启用';
   $('r-cooldowns').textContent = fmt(d.upstream.active_cooldowns);
   $('r-queue').textContent = fmt(d.upstream.refresh_queue_size);
   $('r-refresh').textContent = `${fmt(m.refresh_done)} / ${fmt(m.refresh_fail)}`;
