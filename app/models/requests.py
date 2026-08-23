@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 
 class FileMatchRequest(BaseModel):
@@ -49,7 +49,10 @@ class DanmakuWithDetailRequest(FileMatchRequest):
 class TmdbSearchRequest(BaseModel):
     """TMDB ID搜索请求模型"""
     tmdb_id: int
-    episode: int
+    # 省略集数表示整季查询：返回该作品在弹弹play的全部条目及完整剧集列表，
+    # 客户端可据此在本地完成集号映射，无需逐集回源。
+    # 限定非负，使内部的整季哨兵值（SERIES_EPISODE）从外部不可达
+    episode: Optional[int] = Field(None, ge=0)
     # tmdbId类型：0=电视剧（默认），1=电影，与弹弹play上游的tmdbIdType参数一致
     tmdb_id_type: Optional[int] = 0
 
@@ -60,4 +63,4 @@ class TmdbSearchRequest(BaseModel):
                 "episode": 2,
                 "tmdb_id_type": 0
             }
-        } 
+        }

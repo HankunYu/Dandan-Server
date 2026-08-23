@@ -23,6 +23,10 @@ EMPTY_SEARCH_RESULT = {
     "errorMessage": ""
 }
 
+# 整季查询在tmdb_cache中的集数哨兵。请求模型限定episode非负，
+# 故该值只能由内部产生，不会与任何逐集缓存行冲突
+SERIES_EPISODE = -1
+
 
 def jittered_ttl(episode_id: int) -> timedelta:
     """默认TTL加上按episode确定性的随机抖动
@@ -402,18 +406,27 @@ class DanmakuProxy:
         logger.warning(f"文件匹配失败: {file_name}")
         return None
 
-    async def search_by_tmdb(self, tmdb_id: int, episode: int, tmdb_id_type: int = 0) -> Dict[str, Any]:
+    async def search_by_tmdb(
+        self,
+        tmdb_id: int,
+        episode: Optional[int] = None,
+        tmdb_id_type: int = 0
+    ) -> Dict[str, Any]:
         """
         通过TMDB ID搜索动画剧集，支持缓存
 
         Args:
             tmdb_id: TMDB ID
-            episode: 集数
+            episode: 集数；None表示整季查询，返回该作品的全部条目与完整剧集列表
             tmdb_id_type: tmdbId类型，0=电视剧（默认），1=电影
 
         Returns:
             Dict[str, Any]: 搜索结果
         """
+        # 整季查询与逐集查询共用同一张缓存表，仅集数键不同，
+        # 使TTL、空结果兜底、系列级负缓存等逻辑对两者完全一致
+        cache_episode = episode if episode is not None else SERIES_EPISODE
+
         # 首先尝试从缓存获取数据。
         # 有结果的条目永久有效；空结果只在TTL内有效，过期后重新回源，
         # 以便查到后续才被弹弹play收录的作品（过期的空结果保留作回源失败时的兜底）
@@ -422,7 +435,7 @@ class DanmakuProxy:
             stmt = select(TmdbCache).where(
                 TmdbCache.tmdb_id == tmdb_id,
                 TmdbCache.id_type == tmdb_id_type,
-                TmdbCache.episode == episode
+                TmdbCache.episode == cache_episode
             )
             result = await self.db.execute(stmt)
             cached_data = result.scalar_one_or_none()
@@ -475,8 +488,9 @@ class DanmakuProxy:
             'tmdbId': tmdb_id,
             'tmdbIdType': tmdb_id_type
         }
-        # 电影没有集数概念，传数字episode会被上游按集数过滤导致空结果，仅TV类型传递
-        if tmdb_id_type == 0:
+        # 电影没有集数概念，传数字episode会被上游按集数过滤导致空结果，仅TV类型传递；
+        # 整季查询同样不传，此时上游返回该作品的全部条目及完整剧集列表
+        if tmdb_id_type == 0 and episode is not None:
             params['episode'] = episode
 
         headers = {
@@ -513,7 +527,7 @@ class DanmakuProxy:
                 stmt = select(TmdbCache).where(
                     TmdbCache.tmdb_id == tmdb_id,
                     TmdbCache.id_type == tmdb_id_type,
-                    TmdbCache.episode == episode
+                    TmdbCache.episode == cache_episode
                 )
                 result = await self.db.execute(stmt)
                 existing_cache = result.scalar_one_or_none()
@@ -528,7 +542,7 @@ class DanmakuProxy:
                     cache = TmdbCache(
                         tmdb_id=tmdb_id,
                         id_type=tmdb_id_type,
-                        episode=episode,
+                        episode=cache_episode,
                         data=data
                     )
                     self.db.add(cache)
@@ -539,12 +553,13 @@ class DanmakuProxy:
                 logger.error(f"保存TMDB搜索结果到缓存时出错: {e}")
                 await self.db.rollback()
 
-            # 维护系列级负缓存：电影查询本就不带集数、结果即系列级定论；
-            # 电视剧空结果可能只是该集缺失，需一次不带集数的探测来确认整部是否无结果
+            # 维护系列级负缓存：本次查询若本就不带集数（电影、或整季查询），
+            # 空结果即整部无收录的定论，无需再探测一次；
+            # 逐集查询的空结果可能只是该集缺失，仍需一次不带集数的探测来确认
             is_empty = isinstance(data, dict) and not data.get('animes')
             if not is_empty:
                 await self._clear_series_negative(tmdb_id, tmdb_id_type)
-            elif tmdb_id_type == 1:
+            elif tmdb_id_type == 1 or episode is None:
                 await self._save_series_negative(tmdb_id, tmdb_id_type)
             else:
                 await self._probe_series_negative(tmdb_id, tmdb_id_type)

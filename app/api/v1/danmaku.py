@@ -100,11 +100,14 @@ async def search_by_tmdb(
 ) -> Dict[str, Any]:
     """
     通过TMDB ID搜索动画剧集
-    
+
+    省略episode即整季查询，一次返回该作品的全部条目与完整剧集列表，
+    客户端可在本地完成集号映射，避免逐集回源。
+
     Args:
-        request: 包含TMDB ID和集数的请求
+        request: 包含TMDB ID的请求，episode可选
         db: 数据库会话
-        
+
     Returns:
         Dict[str, Any]: 搜索结果，包含匹配的动画信息和剧集信息
     """
